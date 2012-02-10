@@ -144,7 +144,7 @@ div.form-row-input > input{max-width:300px;}
 .box{
     position:fixed;
     display:none;
-    top: 45px;
+    top: 35px;
     width: 700px;
     background-color:#fff;
     color:#7F7F7F;
@@ -179,6 +179,9 @@ div.form-row-input > input{max-width:300px;}
     display:inline-block;
 */}
 
+#main_text {
+    text-align: justify;
+}
 #main_text_important {
     background: #bb0011;
     padding: 10px;
@@ -233,7 +236,7 @@ div.form-row-input > input{max-width:300px;}
 }
 .help_content {
     color: #9D9E9E;
-    width: 450px;
+    width: 630px;
     background-color: #E7E8E9;
     margin: 3px 0 10px;
     padding: 3px 5px;
@@ -1133,4 +1136,7 @@ div.volume_expand_popup{
     display: inline-block;
     border: solid #aaaaaa 1px;
     clear:both;
+}
+p.disabled {
+    color: #CDCDCD;
 }

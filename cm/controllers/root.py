@@ -7,6 +7,7 @@ from cm.util.json import to_json_string
 from cm.framework import expose
 from cm.base.controller import BaseController
 from cm.services import service_states
+from cm.util.bunch import BunchToo
 import cm.util.paths as paths
 
 log = logging.getLogger( 'cloudman' )
@@ -31,14 +32,15 @@ class CM(BaseController):
                                         cluster_name = cluster_name,
                                         master_instance_type = self.app.cloud_interface.get_type(),
                                         use_autoscaling = bool(self.app.manager.get_services('Autoscale')),
+                                        image_config_support = BunchToo(self.app.config.ic),
                                         CM_url=CM_url)
     def get_CM_url(self, trans):
         changesets = self.app.manager.check_for_new_version_of_CM()
         if changesets.has_key('default_CM_rev') and changesets.has_key('user_CM_rev'):
             try:
-                CM_url = trans.app.config.get( "CM_url", "http://bitbucket.org/galaxy/cloudman/changesets/" )
-                num_changes = int(changesets['default_CM_rev']) - int(changesets['user_CM_rev'])
-                CM_url += changesets['default_CM_rev'] + '/' + str(num_changes)
+                CM_url = trans.app.config.get("CM_url", "http://bitbucket.org/galaxy/cloudman/changesets/tip/")
+                # num_changes = int(changesets['default_CM_rev']) - int(changesets['user_CM_rev'])
+                CM_url += changesets['user_CM_rev'] + '::' + changesets['default_CM_rev']
                 return CM_url
             except Exception, e:
                 log.debug("Error calculating changeset range for CM 'What's new' link: %s" % e)
@@ -73,7 +75,7 @@ class CM(BaseController):
                 self.app.manager.init_cluster(startup_opt, pss)
             elif startup_opt == "Shared_cluster":
                 if shared_bucket is not None:
-                    self.app.manager.init_shared_cluster(shared_bucket)
+                    self.app.manager.init_shared_cluster(shared_bucket.strip())
                 else:
                     return "Must provide shared bucket name; cluster configuration not set."
         else:
@@ -96,6 +98,9 @@ class CM(BaseController):
         except TypeError, ex:
             log.error("You must provide valid value type: %s" % ex)
             return "TypeError exception. Check the log."
+        except Exception, g_ex:
+            log.error("Unknown Exception: %s" % g_ex)
+            return "Unknown exception. Check the log for details."
         return self.instance_state_json(trans)
     
     @expose
@@ -176,6 +181,10 @@ class CM(BaseController):
         except ValueError, e:
             log.error("You must provide valid value.  %s" % e)
         return self.instance_state_json(trans)
+    
+    @expose
+    def store_cluster_config(self, trans):
+        self.app.manager.console_monitor.store_cluster_config()
     
     @expose
     def log(self, trans, l_log=0):
@@ -459,7 +468,8 @@ class CM(BaseController):
         return trans.fill_template('admin.mako', 
                                    ip=self.app.cloud_interface.get_self_public_ip(),
                                    key_pair_name=self.app.cloud_interface.get_key_pair_name(),
-                                   filesystems=filesystems)
+                                   filesystems=filesystems,
+                                   bucket_cluster=self.app.ud['bucket_cluster'])
     
     @expose
     def cluster_status(self, trans):

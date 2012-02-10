@@ -15,6 +15,7 @@ class GalaxyService(ApplicationService):
     def __init__(self, app):
         super(GalaxyService, self).__init__(app)
         self.galaxy_home = paths.P_GALAXY_HOME
+        log.debug("Using Galaxy from '{0}'".format(self.galaxy_home))
         self.svc_type = "Galaxy"
         self.configured = False # Indicates if the environment for running Galaxy has been configured
         self.reqs = {'Postgres': None,
@@ -89,7 +90,7 @@ class GalaxyService(ApplicationService):
                 misc.run('/etc/init.d/proftpd start', 'Failed to start FTP server', "Started FTP server")
                 # TEMPORARY ONLY - UNTIL SAMTOOLS WRAPPER IS CONVERTED TO USE DATA TABLES
                 if os.path.exists('/mnt/galaxyIndices/locfiles/sam_fa_indices.loc'):
-                    shutil.copy('/mnt/galaxyIndices/locfiles/sam_fa_indices.loc', '/mnt/galaxyTools/galaxy-central/tool-data/sam_fa_indices.loc')
+                    shutil.copy('/mnt/galaxyIndices/locfiles/sam_fa_indices.loc', '%s/tool-data/sam_fa_indices.loc' % paths.P_GALAXY_HOME)
                 # Ensure the environment is setup for running Galaxy
                 # This can also be setup on the tools snapshot and thus avoid these patches
                 # try:

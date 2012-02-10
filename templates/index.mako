@@ -6,18 +6,20 @@ vertical-align: top;
 }
 </style>
 <div class="body" style="max-width: 720px; margin: 0 auto;">
-    <h2>Galaxy Cloudman Console</h2>
+    <h2>CloudMan Console</h2>
     <div id="storage_warning" style="display:none;" class="warning"><strong>Warning:</strong> You are running out of disk space.  Use the disk icon below to increase your volume size.</div>
     <div id="main_text">
         %if initial_cluster_type is None:
-            Welcome to Galaxy Cloudman.  This application will allow you to manage this cloud instance and the services 
-            provided within. If this is your first time running this cluster, you will need to select an initial data volume 
-            size. Once the data store is configured, default services will start and you will be able to add and remove additional
-            services as well as 'worker' nodes on which jobs are run.
+            Welcome to <a href="http://usecloudman.org/" target="_blank">CloudMan</a>.
+            This application allows you to manage this cloud cluster and the services provided within. 
+            If this is your first time running this cluster, you will need to select an initial data volume 
+            size. Once the data store is configured, default services will start and you will be able to add 
+            and remove additional services as well as 'worker' nodes on which jobs are run.
         %else:
-            Welcome to Galaxy Cloudman.  This application allows you to manage this instance of Galaxy CloudMan. Your previous 
-            data store has been reconnected.  Once the cluster has initialized, use the controls below to add and remove 'worker' 
-            nodes for running jobs.
+            Welcome to <a href="http://usecloudman.org/" target="_blank">CloudMan</a>.
+            This application allows you to manage this instance cloud cluster and the services 
+            provided within. Your previous data store has been reconnected.  Once the cluster has initialized, 
+            use the controls below to manage services provided by the application.
         %endif
     </div>
     <div style="clear: both;"></div><br/>
@@ -135,7 +137,7 @@ vertical-align: top;
         the snapshot's description.</p>
         </div>
         <div class="form-row">
-            <label>New Disk Size (max 1000GB):</label>
+            <label>New Disk Size (minimum <span id="du-inc">0</span>GB, maximum 1000GB):</label>
             <div id="permanent_storage_size" class="form-row-input">
                 <input type="text" name="new_vol_size" id="new_vol_size" value="0" size="25">
             </div>
@@ -186,13 +188,18 @@ vertical-align: top;
         <div class="form-row">
             <label>Are you sure you want to power the cluster off?</label>
             <p>This action will shut down all services on the cluster and terminate
-            any worker nodes (instances) associated with this cluster. By default, 
-            the master instance will be left alive and should be terminated 
-            manually (using the AWS console).</p>
+            any worker nodes (instances) associated with this cluster. Unless you
+            choose to have the cluster deleted, all of your data will be preserved
+            beyond the life of this instance. Next time you wish to start this same
+            cluster, simply use the same user data (i.e., cluster name and AWS account)
+            and CloudMan will reactivate your cluster with your data.</p>
             <label>Automatically terminate the master instance?</label>
-            <input type="checkbox" name="terminate_master_instance" id="terminate_master_instance" checked> If checked, this master instance will automatically terminate after all services have been shut down.
+            <input type="checkbox" name="terminate_master_instance" id="terminate_master_instance" checked>
+            If checked, this master instance will automatically terminate after all services have been shut down.
+            If not checked, you should maually terminate this instance after all services have been shut down.
             <p></p><label>Also delete this cluster?</label>
-            <input type="checkbox" name="delete_cluster" id="delete_cluster"> If checked, this cluster will be deleted. <b>This action is irreversible!</b> All your data will be deleted.
+            <input type="checkbox" name="delete_cluster" id="delete_cluster">
+            If checked, this cluster will be deleted. <b>This action is irreversible!</b> All your data will be deleted.
             <div class="form-row"><input type="submit" value="Yes, power off"></div>
         </div>
     </form>
@@ -360,11 +367,24 @@ vertical-align: top;
     </div>
     <form id="initial_volume_config_form" name="power_cluster_form" action="${h.url_for(controller='root',action='initialize_cluster')}" method="post">
         <div class="form-row">
-            <p><input id="galaxy-cluster" type="radio" name="startup_opt" value="Galaxy" checked='true'>
-                <b>Galaxy Cluster</b>: Galaxy application, available tools, reference datasets, SGE job manager, and a data volume.
-                Specify the initial storage size (in Gigabytes):
-            </p>
-            <input style="margin-left:20px" type="text" name="g_pss" class="LV_field" id="g_pss" value="" size="3">GB<span id="g_pss_vtag"></span>
+            ## Allow Galaxy-cluster only if the underlying image/system supports it
+            % if 'galaxy' in image_config_support.apps:
+                <p><input id="galaxy-cluster" type="radio" name="startup_opt" value="Galaxy" checked='true'>
+                    <b>Galaxy Cluster</b>: Galaxy application, available tools, reference datasets, SGE job manager, and a data volume.
+                    Specify the initial storage size (in Gigabytes):
+                </p>
+                <input style="margin-left:20px" type="text" name="g_pss" class="LV_field" id="g_pss" value="" size="3">GB<span id="g_pss_vtag"></span>
+            % else:
+                <p class='disabled'>
+                    <input id="galaxy-cluster" type="radio" name="startup_opt" value="Galaxy" disabled='true'>
+                    <b>Galaxy Cluster</b>: Galaxy application, available tools, reference datasets,
+                    SGE job manager, and a data volume. <u>NOTE</u>: The current machine image
+                    does not support this cluster type option; click on 'Show more startup options'
+                    so see the available cluster configuration options.
+                    <br/>Specify the initial storage size (in Gigabytes):
+                </p>
+                <input disabled='true' style="margin-left:20px" type="text" name="g_pss" class="LV_field" id="g_pss" value="" size="3">GB<span id="g_pss_vtag"></span>
+            % endif             
         </div>
         <div id='extra_startup_options'>
             <div class="form-row">
@@ -393,7 +413,7 @@ vertical-align: top;
         <div id="toggle_extra_startup_options_cont" class="form-row"><a id='toggle_extra_startup_options' href="#">Show more startup options</a></div>
         <br/>
         <div class="form-row" style="text-align:center;">
-            <input type="submit" value="Start Cluster" id="start_cluster_submit_btn"/>
+            <input type="submit" value="Start CloudMan Cluster" id="start_cluster_submit_btn"/>
         </div>
         </form>
     </div>
@@ -490,9 +510,12 @@ function update_ui(data){
         $('#status-available').text( data.instance_status.available );
         $('#status-total').text( data.instance_status.requested );
         $('#du-total').text(data.disk_usage.total);
+        $('#du-inc').text(data.disk_usage.total.slice(0,-1));
         $('#du-used').text(data.disk_usage.used);
         $('#du-pct').text(data.disk_usage.pct);
-        $('#new_vol_size').val("Must be larger than " + data.disk_usage.total);
+        if($('#new_vol_size').val() == '0'){
+            $('#new_vol_size').val(data.disk_usage.total.slice(0,-1));
+        }
         if (parseInt(data.disk_usage.pct) > 80){
             $('#storage_warning').show();
         }else{
@@ -678,6 +701,13 @@ function get_shared_instances(){
         });
 }
 
+function show_log_container_body() {
+    // Show the containter box for CloudMan log on the main page
+    $('#log_container_header_img').css('background', 'transparent url(/cloud/static/images/plus_minus.png) no-repeat top right' );
+    $('#log_container_header').addClass('clicked');
+    $('#log_container_body').slideDown('fast');
+}
+
 $(document).ready(function() {
     var initial_cluster_type = '${initial_cluster_type}';
     var permanent_storage_size = ${permanent_storage_size};
@@ -760,9 +790,7 @@ $(document).ready(function() {
     $('#log_container_body').hide();
     $('#log_container_header').click(function() {
         if ($('#log_container_body').is(":hidden")){
-            $('#log_container_header_img').css('background', 'transparent url(/cloud/static/images/plus_minus.png) no-repeat top right' );
-            $('#log_container_header').addClass('clicked');
-            $('#log_container_body').slideDown('fast');
+            show_log_container_body();
         } else {
             $('#log_container_header_img').css('background', 'transparent url(/cloud/static/images/plus_minus.png) no-repeat top left' );
             $('#log_container_body').slideUp('fast', function(){
@@ -833,8 +861,13 @@ $(document).ready(function() {
         dataType: 'json',
         beforeSubmit: function(data){
             cluster_status = "OFF";
-            $('#main_text').html("<div id='main_text_warning'><h4>Important:</h4><p>This cluster is terminating. Please wait for all services to stop and for all nodes to be removed, and then terminate the master instance from the AWS console.</p></div>");
+            $('#main_text').html("<div id='main_text_warning'><h4>Important:</h4><p>This cluster is terminating. Please wait for all services to stop and for all nodes to be removed, and then, if not done automatically, terminate the master instance from the AWS console. All of the buttons on the console have been disabled at this point.</p></div>");
             hidebox();
+            show_log_container_body();
+            update_log();
+            $('#log_container_body').animate({
+                scrollTop: $("#log_container_body").attr("scrollHeight") + 100
+            }, 1000);
             $('#no_click_clear_overlay').show(); // Overlay that prevents any future clicking
         },
         success: function( data ) {

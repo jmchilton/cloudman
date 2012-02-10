@@ -9,6 +9,7 @@ from cm.util import misc, comm
 from cm.services.autoscale import Autoscale
 from cm.services import service_states
 from cm.services.data.filesystem import Filesystem
+from cm.services.apps.pss import PSS
 from cm.services.apps.sge import SGEService
 from cm.services.apps.galaxy import GalaxyService
 from cm.services.apps.postgres import PostgresService
@@ -147,11 +148,16 @@ class ConsoleManager(object):
         log.debug("ud at manager start: %s" % self.app.ud)
         if self.app.TESTFLAG is True and self.app.LOCALFLAG is False:
             log.debug("Attempted to start the ConsoleManager. TESTFLAG is set; nothing to start, passing.")
-            return None
+            return False
         self.app.manager.services.append(SGEService(self.app))
+
         if self.app.LOCALFLAG is True:
             self.init_cluster(cluster_type='Galaxy')
         
+        # Add PSS service - this will run only after the cluster type has been
+        # selected and all of the services are in state RUNNING
+        self.app.manager.services.append(PSS(self.app))
+
         if not self.add_preconfigured_services():
             return False
         self.manager_started = True
@@ -209,18 +215,16 @@ class ConsoleManager(object):
     
     def get_vol_if_fs(self, attached_volumes, filesystem_name):
         """ Iterate through the list of (attached) volumes and check if any
-        one of them matches the current cluster name and filesystem (as stored
+        one of them match the current cluster name and filesystem (as stored
         in volume tags). Returns a matching volume or None.
         Note that this method returns the first matching volume and will thus 
         not work for filesystems composed of multiple volumes. """
-        try:
-            for vol in attached_volumes:
-                if self.app.cloud_interface.get_tag(vol, 'cluster_name') == self.app.ud['cluster_name'] and \
-                   self.app.cloud_interface.get_tag(vol, 'filesystem') == filesystem_name:
-                    log.debug("Identified attached volume '%s' as filesystem '%s'" % (vol.id, filesystem_name))
-                    return vol
-        except EC2ResponseError, e:
-            log.debug("Error checking attached volume '%s' tags: %s" % (vol.id, e))
+        for vol in attached_volumes:
+            log.debug("Checking if vol '{0}' is file system '{1}'".format(vol.id, filesystem_name))
+            if self.app.cloud_interface.get_tag(vol, 'clusterName') == self.app.ud['cluster_name'] and \
+               self.app.cloud_interface.get_tag(vol, 'filesystem') == filesystem_name:
+                log.debug("Identified attached volume '%s' as filesystem '%s'" % (vol.id, filesystem_name))
+                return vol
         return None
     
     def start_autoscaling(self, as_min, as_max, instance_type):
@@ -500,11 +504,17 @@ class ConsoleManager(object):
         self.master_state = master_states.SHUT_DOWN
         log.info( "Cluster shut down at %s (uptime: %s). If not done automatically, manually terminate the master instance (and any remaining instances associated with this cluster) from the AWS console." % (dt.datetime.utcnow(), (dt.datetime.utcnow()-self.startup_time)))
     
-    def reboot(self):
+    def reboot(self, soft=False):
         if self.app.TESTFLAG is True:
             log.debug("Restart the cluster but the TESTFLAG is set")
             return False
         self.shutdown(sd_filesystems=False, sd_instances=False)
+        if soft:
+            if misc.run("{0} restart".format(os.path.join(self.app.ud['boot_script_path'],\
+                self.app.ud['boot_script_name']))):
+                return True
+            else:
+                log.error("Trouble restarting CloudMan softly; rebooting instance now.")
         ec2_conn = self.app.cloud_interface.get_ec2_connection()
         try:
             ec2_conn.reboot_instances([self.app.cloud_interface.get_instance_id()])
@@ -832,6 +842,7 @@ class ConsoleManager(object):
                     del scpd['shared_data_snaps']
                     # Update new cluster's persistent_data.yaml
                     cc_file_name = 'cm_cluster_config.yaml'
+                    log.debug("Dumping scpd to file {0} (which will become persistent_data.yaml): {1}".format(cc_file_name, scpd))
                     misc.dump_yaml_to_file(scpd, cc_file_name)
                     misc.save_file_to_bucket(s3_conn, self.app.ud['bucket_cluster'], 'persistent_data.yaml', cc_file_name)
                 except EC2ResponseError, e:
@@ -843,11 +854,16 @@ class ConsoleManager(object):
             else:
                 log.error("Loaded configuration from the shared cluster does not have a reference to a shared data snapshot. Cannot continue.")
                 return False
+        # TODO: Reboot the instance so CloudMan source downloaded from the shared
+        # instance is used
+        # log.info("Rebooting the cluster so shared instance source can be reloaded.")
+        # self.reboot(soft=True)
         # Reload user data and start the cluster as normally would
         self.app.ud = self.app.cloud_interface.get_user_data(force=True)
         if misc.get_file_from_bucket(s3_conn, self.app.ud['bucket_cluster'], 'persistent_data.yaml', 'pd.yaml'):
             pd = misc.load_yaml_file('pd.yaml')
             self.app.ud = misc.merge_yaml_objects(self.app.ud, pd)
+        reload(paths) # Must reload because paths.py might have changes in it
         self.add_preconfigured_services()
     
     def share_a_cluster(self, user_ids=None, cannonical_ids=None):
@@ -888,8 +904,8 @@ class ConsoleManager(object):
         # including the freshly generated snap IDs
         # snap_ids = ['snap-04c01768'] # For testing only
         conf_file_name = 'cm_shared_cluster_conf.yaml'
-        snaps = {'shared_data_snaps': snap_ids}
-        self.console_monitor.create_cluster_config_file(conf_file_name, addl_data=snaps)
+        addl_data = {'shared_data_snaps': snap_ids, 'galaxy_home': paths.P_GALAXY_HOME}
+        self.console_monitor.create_cluster_config_file(conf_file_name, addl_data=addl_data)
         # Remove references to cluster's own data volumes
         sud = misc.load_yaml_file(conf_file_name)
         if sud.has_key('data_filesystems'):
@@ -1386,7 +1402,7 @@ class ConsoleMonitor( object ):
         representation of it; by default, store the file in the current directory.
         
         :type file_name: string
-        :param file_name: Name (or full path) of the file to save to configuration to
+        :param file_name: Name (or full path) of the file to save the configuration to
         
         :type addl_data: dict of strings
         :param addl_data: Any additional data to be included in the configuration
@@ -1436,7 +1452,8 @@ class ConsoleMonitor( object ):
         if not misc.bucket_exists(s3_conn, self.app.ud['bucket_cluster']):
             misc.create_bucket(s3_conn, self.app.ud['bucket_cluster'])
         # Save/update the current Galaxy cluster configuration to cluster's bucket
-        cc_file_name = self.create_cluster_config_file()
+        clust_customizations = {'galaxy_home': paths.P_GALAXY_HOME}
+        cc_file_name = self.create_cluster_config_file(addl_data=clust_customizations)
         misc.save_file_to_bucket(s3_conn, self.app.ud['bucket_cluster'], 'persistent_data.yaml', cc_file_name)
         # Ensure Galaxy config files are stored in the cluster's bucket, 
         # but only after Galaxy has been configured and is running (this ensures
@@ -1446,7 +1463,8 @@ class ConsoleMonitor( object ):
             galaxy_svc = self.app.manager.get_services('Galaxy')[0]
             if galaxy_svc.running():
                 for f_name in ['universe_wsgi.ini', 'tool_conf.xml', 'tool_data_table_conf.xml']:
-                    if not misc.file_exists_in_bucket(s3_conn, self.app.ud['bucket_cluster'], '%s.cloud' % f_name) and os.path.exists(os.path.join(paths.P_GALAXY_HOME, f_name)):
+                    if (not misc.file_exists_in_bucket(s3_conn, self.app.ud['bucket_cluster'], '%s.cloud' % f_name) and os.path.exists(os.path.join(paths.P_GALAXY_HOME, f_name))) or \
+                       (misc.file_in_bucket_older_than_local(s3_conn, self.app.ud['bucket_cluster'], '%s.cloud' % f_name, os.path.join(paths.P_GALAXY_HOME, f_name))):
                         log.debug("Saving current Galaxy configuration file '%s' to cluster bucket '%s' as '%s.cloud'" % (f_name, self.app.ud['bucket_cluster'], f_name))
                         misc.save_file_to_bucket(s3_conn, self.app.ud['bucket_cluster'], '%s.cloud' % f_name, os.path.join(paths.P_GALAXY_HOME, f_name))
         except:
@@ -1455,19 +1473,19 @@ class ConsoleMonitor( object ):
         if not misc.file_exists_in_bucket(s3_conn, self.app.ud['bucket_cluster'], self.app.ud['boot_script_name']) and os.path.exists(os.path.join(self.app.ud['boot_script_path'], self.app.ud['boot_script_name'])):
             log.debug("Saving current instance boot script (%s) to cluster bucket '%s' as '%s'" % (os.path.join(self.app.ud['boot_script_path'], self.app.ud['boot_script_name']), self.app.ud['bucket_cluster'], self.app.ud['boot_script_name']))
             misc.save_file_to_bucket(s3_conn, self.app.ud['bucket_cluster'], self.app.ud['boot_script_name'], os.path.join(self.app.ud['boot_script_path'], self.app.ud['boot_script_name']))
-        # At start, save/update current post start script to cluster's bucket
-        if not self.prs_saved:
+        # At start or local file update, save/update current post start script to cluster's bucket
+        prs_filename = 'post_start_script'
+        prs_file = os.path.join(self.app.ud['cloudman_home'], prs_filename)
+        if misc.file_in_bucket_older_than_local(s3_conn, self.app.ud['bucket_cluster'], prs_filename, prs_file) or not self.prs_saved:
             # Also see cm_boot.sh because the name and the path of the post start
             # script must match what's used below!
-            prs_filename = 'post_start_script'
-            prs_file = os.path.join(self.app.ud['cloudman_home'], prs_filename)
             if os.path.exists(prs_file):
                 log.debug("Saving current instance post start script (%s) to cluster bucket '%s' as '%s'" \
                     % (prs_file, self.app.ud['bucket_cluster'], prs_filename))
                 if misc.save_file_to_bucket(s3_conn, self.app.ud['bucket_cluster'], prs_filename, prs_file):
                     self.prs_saved = True
             else:
-                log.debug("Instance post start script (%s) does not exist?" % prs_file)
+                log.debug("No instance post start script (%s)" % prs_file)
         # If not existent, save CloudMan source to cluster's bucket, including file's metadata
         if not misc.file_exists_in_bucket(s3_conn, self.app.ud['bucket_cluster'], 'cm.tar.gz') and os.path.exists(os.path.join(self.app.ud['cloudman_home'], 'cm.tar.gz')):
             log.debug("Saving CloudMan source (%s) to cluster bucket '%s' as '%s'" % (os.path.join(self.app.ud['cloudman_home'], 'cm.tar.gz'), self.app.ud['bucket_cluster'], 'cm.tar.gz'))
@@ -1519,9 +1537,9 @@ class ConsoleMonitor( object ):
             # Check and add any new services
             added_srvcs = False # Flag to indicate if cluster conf was changed
             for service in [s for s in self.app.manager.services if s.state == service_states.UNSTARTED]:
-                added_srvcs = True
                 log.debug("Monitor adding service '%s'" % service.get_full_name())
-                service.add()
+                if service.add():
+                    added_srvcs = True
             # Store cluster conf after all services have been added.
             # NOTE: this flag relies on the assumption service additions are
             # sequential (i.e., monitor waits for the service add call to complete).
