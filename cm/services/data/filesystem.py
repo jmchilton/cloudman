@@ -1,98 +1,108 @@
-import commands, os, time, shutil, threading, pwd, grp, subprocess
+"""
+A core class for what CloudMan sees as a file system. This means that it is
+aware of it and can thus manipulate it.
+"""
+import os
+import shutil
+import commands
+import threading
 from datetime import datetime
 
 from boto.exception import EC2ResponseError
 
-from cm.util import paths
 from cm.util.misc import run
 from cm.util.misc import flock
 from cm.services import service_states
 from cm.services.data import DataService
-from cm.services.data import volume_status
 from cm.services.data.volume import Volume
 from cm.services.data.bucket import Bucket
 
 import logging
-log = logging.getLogger( 'cloudman' )
+log = logging.getLogger('cloudman')
 
 
 class Filesystem(DataService):
-    def __init__(self, app, name):
+    def __init__(self, app, name, mount_point=None):
         super(Filesystem, self).__init__(app)
         self.svc_type = "Filesystem"
         self.nfs_lock_file = '/tmp/nfs.lockfile'
-        self.volumes = []
-        self.buckets = []
-        self.name = name
+        self.volumes = [] # A list of cm.services.data.volume.Volume objects
+        self.buckets = [] # A list of cm.services.data.bucket.Bucket objects
+        self.name = name  # File system name
         self.size = None
         self.dirty = False
-        self.mount_point = '/mnt/%s' % self.name
+        self.kind = None # Choice of 'snapshot', 'volume', or 'bucket'
+        self.mount_point = mount_point if mount_point is not None else '/mnt/%s' % self.name
         self.grow = None # Used (APPLICABLE ONLY FOR the galaxyData FS) to indicate a need to grow
                          # the file system; use following dict structure:
                          # {'new_size': <size>, 'snap_desc': <snapshot description>}
         self.started_starting = datetime.utcnow() # A time stamp when the state changed to STARTING.
                                                   # It is used to avoid brief ERROR states during
                                                   # the system configuration.
-    
+
     def get_full_name(self):
+        """
+        Return a descriptive name of this file system
+        """
         return "FS-%s" % self.name
-    
+
     def get_size(self):
+        """
+        Get the total size of this file system across all of its devices
+        """
         new_size = 0
         for volume in self.volumes:
             new_size += volume.size
+        # TODO: get FS size for buckets
         self.size = new_size
         return self.size
-    
+
     def add(self):
+        """
+        Add this file system service by adding any devices that compose it
+        """
         try:
-            log.debug("Trying to add service '%s'" % self.get_full_name())
+            log.debug("Trying to add file system service {0}".format(self.get_full_name()))
             self.state = service_states.STARTING
-            self.starter_starting = datetime.utcnow()
             for vol in self.volumes:
-                vol.create(self.name)
-                # Mark a volume as 'static' if created from a snapshot
-                # Note that if a volume is marked as 'static', it is assumed it 
-                # can be deleted upon cluster termination!
-                if self.name != 'galaxyData' and vol.from_snapshot_id is not None:
-                    log.debug("Marked volume '%s' from file system '%s' as 'static'" % (vol.volume_id, self.name))
-                    vol.static = True
-                if vol.attach():
-                    self.mount(vol)
+                threading.Thread(target=vol.add).start()
             for b in self.buckets:
+                self.kind = 'bucket'
                 threading.Thread(target=b.mount).start()
                 log.debug("Initiated addition of FS from bucket {0}".format(b.bucket_name))
         except Exception, e:
-            log.error("Error adding filesystem service '%s-%s': %s" % (self.svc_type, self.name, e))
+            log.error("Error adding file system service {0}: {1}".format(self.get_full_name(), e))
         self.status()
-    
+
     def remove(self):
-        """ Sequential removal of volumes has issues so thread it"""
-        log.info("Removing '{0}' data service with volumes {1} and buckets {2}"\
+        """
+        Initiate removal of this file system from the system
+        """
+        log.info("Initiating removal of '{0}' data service with volumes {1} and buckets {2}"\
             .format(self.get_full_name(), self.volumes, self.buckets))
         self.state = service_states.SHUTTING_DOWN
         r_thread = threading.Thread( target=self.__remove )
         r_thread.start()
-    
+
     def __remove(self, delete_vols=True):
-        log.debug("Thread-removing '%s-%s' data service" % (self.svc_type, self.name))
+        """
+        Do the actual removal of devices used to compose this file system
+        """
+        log.debug("Removing {0} devices".format(self.get_full_name()))
         self.state = service_states.SHUTTING_DOWN
         for vol in self.volumes:
-            self.unmount()
-            log.debug("Detaching volume '%s' as %s" % (vol.volume_id, self.get_full_name()))
-            if vol.detach():
-                log.debug("Detached volume '%s' as %s" % (vol.volume_id, self.get_full_name()))
-                if vol.static and self.name != 'galaxyData' and delete_vols:
-                    log.debug("Deleting %s" % self.get_full_name())
-                    vol.delete()
+            vol.remove(self.mount_point)
         for b in self.buckets:
             b.unmount()
         log.debug("Setting state of %s to '%s'" % (self.get_full_name(), service_states.SHUT_DOWN))
         self.state = service_states.SHUT_DOWN
-    
+
     def clean(self):
-        """ Remove filesystems and clean up as if they were never there. Useful for CloudMan restarts."""
-        self.remove()
+        """
+        Remove this file system and clean up the system as if the file system was
+        never there. Useful for CloudMan restarts.
+        """
+        self.__remove()
         # If the service was successfuly removed, remove the mount point
         if self.state == service_states.SHUT_DOWN:
             try:
@@ -103,7 +113,7 @@ class Filesystem(DataService):
         else:
             log.warning("Wanted to clean file system {0} but the service is not in state '{1}'; it in state '{2}'") \
                 .format(self.name, service_states.SHUT_DOWN, self.state)
-    
+
     def expand(self):
         if self.grow is not None:
             self.__remove()
@@ -115,10 +125,10 @@ class Filesystem(DataService):
                 vol.size = self.grow['new_size']
                 vol.from_snapshot_id = snap_id
                 vol.volume_id = None
-            
+
             # Create a new volume based on just created snapshot and add the file system
             self.add()
-        
+
             # Grow file system
             if not run('/usr/sbin/xfs_growfs %s' % self.mount_point, "Error growing file system '%s'" % self.mount_point, "Successfully grew file system '%s'" % self.mount_point):
                 return False
@@ -141,8 +151,12 @@ class Filesystem(DataService):
         else:
             log.debug("Tried to grow '%s' but grow flag is None" % self.get_full_name())
             return False
-    
+
     def snapshot(self, snap_description=None):
+        """
+        Create a snapshot of this file system. **Note** that this only applies to
+        file systems based on volumes.
+        """
         self.__remove(delete_vols=False)
         snap_ids = []
         # Create a snapshot of the detached volumes
@@ -151,123 +165,12 @@ class Filesystem(DataService):
         # After the snapshot is done, add the file system back as a cluster service
         self.add()
         return snap_ids
-    
-    def mount(self, volume, mount_point=None):
-        """ Mount file system at provided mount point. If present in /etc/exports, 
-        this method enables NFS on given mount point (i.e., uncomments respective
-        line in /etc/exports) 
-        """
-        if mount_point is not None:
-            self.mount_point = mount_point
-        for counter in range(30):
-            if volume.status() == volume_status.ATTACHED:
-                if os.path.exists(self.mount_point):
-                    if len(os.listdir(self.mount_point)) != 0:
-                        log.warning("Filesystem at %s already exists and is not empty." % self.mount_point)
-                        return False
-                else:
-                    os.mkdir( self.mount_point )
-                
-                # Potentially wait for the device to actually become available in the system
-                # TODO: Do something if the device is not available in given time period
-                for i in range(10):
-                    if os.path.exists(volume.get_device()):
-                        log.debug("Path '%s' checked and exists." % volume.get_device())
-                        break
-                    else:
-                        log.debug("Path '%s' does not yet exists." % volume.get_device())
-                        time.sleep(4)
-                # Until the underlying issue is fixed (see FIXME below), mask this
-                # even more by custom-handling the run command and thus not printing the err
-                cmd = '/bin/mount %s %s' % (volume.get_device(), self.mount_point)
-                process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                _, _ = process.communicate()
-                if process.returncode != 0:
-                    # FIXME: Assume if a file system cannot be mounted that it's because
-                    # there is not a file system on the device so try creating one
-                    if run('/sbin/mkfs.xfs %s' % volume.get_device(), 
-                        "Failed to create filesystem on device %s" % volume.get_device(),
-                        "Created filesystem on device %s" % volume.get_device()):
-                        if not run('/bin/mount %s %s' % (volume.get_device(), self.mount_point),
-                            "Error mounting file system %s from %s" % (self.mount_point, volume.get_device()),
-                            "Successfully mounted file system %s from %s" % (self.mount_point, volume.get_device())):
-                            log.error("Failed to mount device '%s' to mount point '%s'" 
-                                % (volume.get_device(), self.mount_point))
-                            return False
-                else:
-                    log.info("Successfully mounted file system {0} from {1}".format(self.mount_point, volume.get_device()))
-                try:
-                    # Default owner of all mounted file systems to `galaxy` user
-                    os.chown(self.mount_point, pwd.getpwnam("galaxy")[2], grp.getgrnam("galaxy")[2])
-                    # Add Galaxy- and CloudBioLinux-required files under the 'data' dir
-                    if self.name == 'galaxyData':
-                        for sd in ['files', 'tmp', 'upload_store', 'export']:
-                            path = os.path.join(paths.P_GALAXY_DATA, sd)
-                            if not os.path.exists(path):
-                                os.mkdir(path)
-                            # Make 'export' dir that's shared over NFS be
-                            # owned by `ubuntu` user so it's accesible 
-                            # for use to the rest of the cluster
-                            if sd == 'export':
-                                os.chown(path, pwd.getpwnam("ubuntu")[2], grp.getgrnam("ubuntu")[2])
-                            else:
-                                os.chown(path, pwd.getpwnam("galaxy")[2], grp.getgrnam("galaxy")[2])
-                except OSError, e:
-                    log.debug("Tried making galaxyData sub-dirs but failed: %s" % e)
-                # if self.name == 'galaxyIndices':
-                #     run("ln -s %s /mnt/biodata" % self.mount_point, "Failed to create a symlink for galaxyIndices to biodata", "Successfully  created a symlink for galaxyIndices to biodata")
-                # run('/bin/chown -R galaxy:galaxy %s' % self.mount_point, "Failed to change owner of '%s' to 'galaxy:galaxy'" % self.mount_point, "Changed owner of '%s' to 'galaxy'" % self.mount_point)
-                try:
-                    mp = self.mount_point.replace('/', '\/') # Escape slashes for sed
-                    if run("/bin/sed 's/^#%s/%s/' /etc/exports > /tmp/exports.tmp" % (mp, mp), "Error removing '%s' from '/etc/exports'" % self.mount_point, "Successfully edited '%s' in '/etc/exports' for NFS." % self.mount_point):
-                        shutil.move( '/tmp/exports.tmp', '/etc/exports' )
-                        self.dirty = True
-                except Exception, e:
-                    log.debug("Problems configuring NFS or /etc/exports: '%s'" % e)
-                    return False
-                return True
-            log.warning("Cannot mount volume '%s' in state '%s'. Waiting (%s/30)." % (volume.volume_id, volume.status(), counter))
-            time.sleep( 2 )
-    
-    def unmount(self, mount_point=None):
-        """ 
-        Unmount the file system at the provided or the default mount point.
-        If the file system is present in /etc/exports, this method enables
-        NFS on the given mount point by uncommenting the respective line in
-        this file and indicating that the NFS server should to be restarted).
-        """
-        if mount_point is not None:
-            self.mount_point = mount_point
-        try:
-            mp = self.mount_point.replace('/', '\/') # Escape slashes for sed
-            # Because we're unmounting the file systems in separate threads, use a lock file
-            with flock(self.nfs_lock_file):
-                if run("/bin/sed 's/^%s/#%s/' /etc/exports > /tmp/exports.tmp" % (mp, mp), "Error removing '%s' from '/etc/exports'" % self.mount_point, "Successfully removed '%s' from '/etc/exports'" % self.mount_point):
-                    shutil.move( '/tmp/exports.tmp', '/etc/exports' )
-                    self.dirty = True
-        except Exception, e:
-            log.debug("Problems configuring NFS or /etc/exports: '%s'" % e)
-            return False
-        self.status()
-        if self.state == service_states.RUNNING or self.state == service_states.SHUTTING_DOWN:
-            for counter in range(10):
-                if run('/bin/umount -f %s' % self.mount_point, "Error unmounting file system '%s'" % self.mount_point, "Successfully unmounted file system '%s'" % self.mount_point):
-                    break
-                if counter == 9:
-                    log.warning("Could not unmount file system at '%s'" % self.mount_point)
-                    return False
-                counter += 1
-                time.sleep(3)
-            return True
-        else:
-            log.debug("Did not unmount file system '%s' because it is not in state 'running' or 'shutting-down'" % self.get_full_name())
-            return False
-    
+
     def _get_attach_device_from_device(self, device):
         for vol in self.volumes:
             if device == vol.device:
                 return vol.attach_device
-    
+
     def check_and_update_volume(self, device):
         f = {'attachment.device': device, 'attachment.instance-id': self.app.cloud_interface.get_instance_id()}
         vols = self.app.cloud_interface.get_ec2_connection().get_all_volumes(filters=f)
@@ -288,48 +191,56 @@ class Filesystem(DataService):
         else:
             log.warning("Did not find a volume attached to instance '%s' as device '%s', file system '%s' (vols=%s)" \
                 % (self.app.cloud_interface.get_instance_id(), device, self.name, vols))
-    
+
     def add_nfs_share(self, mount_point=None, permissions='rw'):
-        """ Share the given/current file system/mount point over NFS. Note that
-            if the given mount point already exists in /etc/exports, replace
-            the existing line with the line composed within this method.
-            
-            :type mount_point: string
-            :param mount_point: The mount point to add to the NFS share
-            
-            :type permissions: string
-            :param permissions: Choose the type of permissions for the hosts
-                                mounting this NFS mount point. Use: 'rw' for
-                                read-write (default) or 'ro' for read-only
         """
-        ee_file = '/etc/exports'
-        if mount_point is None:
-            mount_point = self.mount_point
-        # Compose the line that will be put into /etc/exports
-        # NOTE: with Spot instances, should we use 'async' vs. 'sync' option?
-        # See: http://linux.die.net/man/5/exports
-        ee_line = "{mp}\t*({perms},sync,no_root_squash,no_subtree_check)\n"\
-            .format(mp=mount_point, perms=permissions)
-        # Determine if the given mount point is already shared
-        with open(ee_file) as f:
-            shared_paths = f.readlines()
-        in_ee = -1
-        for i, sp in enumerate(shared_paths):
-            if mount_point in sp:
-                in_ee = i
-        # If the mount point is already in /etc/exports, replace the existing
-        # entry with the newly composed ee_line (thus supporting change of 
-        # permissions). Otherwise, append ee_line to the end of the file.
-        if in_ee > -1:
-            shared_paths[in_ee] = ee_line
-        else:
-            shared_paths.append(ee_line)
-        # Write out the newly composed file
-        with open(ee_file, 'w') as f:
-            f.writelines(shared_paths)
-        # Mark the NFS server as being in need of a restart
-        self.dirty=True
-    
+        Share the given/current file system/mount point over NFS. Note that
+        if the given mount point already exists in /etc/exports, replace
+        the existing line with the line composed within this method.
+
+        :type mount_point: string
+        :param mount_point: The mount point to add to the NFS share
+
+        :type permissions: string
+        :param permissions: Choose the type of permissions for the hosts
+                            mounting this NFS mount point. Use: 'rw' for
+                            read-write (default) or 'ro' for read-only
+        """
+        try:
+            ee_file = '/etc/exports'
+            if mount_point is None:
+                mount_point = self.mount_point
+            # Compose the line that will be put into /etc/exports
+            # NOTE: with Spot instances, should we use 'async' vs. 'sync' option?
+            # See: http://linux.die.net/man/5/exports
+            ee_line = "{mp}\t*({perms},sync,no_root_squash,no_subtree_check)\n"\
+                .format(mp=mount_point, perms=permissions)
+            # Make sure we manipulate ee_file by a single process at a time
+            with flock(self.nfs_lock_file):
+                # Determine if the given mount point is already shared
+                with open(ee_file) as f:
+                    shared_paths = f.readlines()
+                in_ee = -1
+                for i, sp in enumerate(shared_paths):
+                    if mount_point in sp:
+                        in_ee = i
+                # If the mount point is already in /etc/exports, replace the existing
+                # entry with the newly composed ee_line (thus supporting change of
+                # permissions). Otherwise, append ee_line to the end of the file.
+                if in_ee > -1:
+                    shared_paths[in_ee] = ee_line
+                else:
+                    shared_paths.append(ee_line)
+                # Write out the newly composed file
+                with open(ee_file, 'w') as f:
+                    f.writelines(shared_paths)
+            # Mark the NFS server as being in need of a restart
+            self.dirty=True
+            return True
+        except Exception, e:
+            log.error("Error configuring {0} file for NFS: {1}".format(ee_file, e))
+            return False
+
     def status(self):
         """
         Do a status update for the current file system, checking
@@ -386,14 +297,26 @@ class Filesystem(DataService):
         else:
             log.debug("Did not check status of filesystem '%s' with mount point '%s' in state '%s'" \
                 % (self.name, self.mount_point, self.state))
-    
-    def add_volume(self, vol_id=None, size=None, from_snapshot_id=None):
+
+    def add_volume(self, vol_id=None, size=0, from_snapshot_id=None):
+        """
+        Add a volume device to this file system.
+
+        Each file system is composed of actual devices; otherwise, it's just an
+        empty shell/wrapper for what CloudMan considers a file system.
+        """
         log.debug("Adding Volume (id={id}, size={size}, snap={snap}) into Filesystem {fs}"\
             .format(id=vol_id, size=size, snap=from_snapshot_id, fs=self.get_full_name()))
         self.volumes.append(Volume(self, vol_id=vol_id, size=size, from_snapshot_id=from_snapshot_id))
-    
+
     def add_bucket(self, bucket_name, bucket_a_key=None, bucket_s_key=None):
+        """
+        Add a bucket to this file system.
+
+        Each file system is composed of actual devices; otherwise, it's just an
+        empty shell/wrapper for what CloudMan considers a file system.
+        """
         log.debug("Adding Bucket (name={name}) into Filesystem {fs}"\
             .format(name=bucket_name, fs=self.get_full_name()))
         self.buckets.append(Bucket(self, bucket_name, bucket_a_key, bucket_s_key))
-    
+
