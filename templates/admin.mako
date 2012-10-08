@@ -30,7 +30,7 @@
                         Add Galaxy admin users to Galaxy. This action simply
                         adds users' emails to Galaxy's universe_wsgi.ini file
                         and does not check of the users exist or register new
-                        users. Note that this action implies restarting Galaxy. 
+                        users. Note that this action implies restarting Galaxy.
                     </div>
                 </span>
                 <form class="generic_form" action="${h.url_for(controller='root', action='add_galaxy_admin_users')}" method="post">
@@ -57,7 +57,7 @@
                         changes.<br />This action will:
                         <ol>
                             <li>Stop Galaxy service</li>
-                            <li>Pull and apply any changes from the provided repository. 
+                            <li>Pull and apply any changes from the provided repository.
                             If there are conflicts during the merge, local changes
                             will be preserved.</li>
                             <li>Call Galaxy database migration script</li>
@@ -117,8 +117,9 @@
         </table>
         <strong>File systems</strong>
         ## backbone-managed
+        <div id="fs-confirmRemove-container"></div>
         <div id='fs-details-container'></div>
-        <table id="filesystems-table"></table>
+        <div id="filesystems-container"></div>
         <div id='fs-resize-form-container'></div>
         <div id='fs-add-container'>
             <div id='fs-add-form'></div>
@@ -145,7 +146,7 @@
                         repository is stored under your cloud account and is accessible
                         only with your credentials. <br/>
                         In the context of AWS, S3 acts as a persistent data repository where
-                        all the data is stored in an S3 bucket. The name of the bucket 
+                        all the data is stored in an S3 bucket. The name of the bucket
                         provided here corresponds to the current cluster and is provided
                         simply as a reference.
                     </div>
@@ -154,11 +155,11 @@
             <li><a id='cloudman_log' href="${h.url_for(controller='root', action='service_log')}?service_name=CloudMan">Show CloudMan log</a></li>
             </li>
             <li>
-                <a class="action" id="master_is_exec_host" href="${h.url_for(controller='root', action='toggle_master_as_exec_host')}">&nbsp;</a> 
+                <a class="action" id="master_is_exec_host" href="${h.url_for(controller='root', action='toggle_master_as_exec_host')}">&nbsp;</a>
                 <span class="help_info">
                     <span class="help_link">What will this do?</span>
                     <div class="help_content" style="display: none">
-                        By default, the master instance running all the services is also configured to 
+                        By default, the master instance running all the services is also configured to
                         execute jobs. You may toggle this functionality here. Note that if job execution
                         on the master is disabled, at least one worker instance will be required to
                         run any jobs.
@@ -176,13 +177,13 @@
                     <span class="help_info">
                         <span class="help_link">What will this do?</span>
                         <div class="help_content" style="display: none">
-                            If you have made changes to any of the available 
+                            If you have made changes to any of the available
                             file systems and would like to persist the changes
                             across cluster invocations, click on the name of the
                             desired file system and the cluster configuration
-                            will be updated (all of the file systems are 
+                            will be updated (all of the file systems are
                             mounted on the system unter /mnt/[file system name]).
-                            Note that depending on the amount of changes made to 
+                            Note that depending on the amount of changes made to
                             the underlying file system, this process may take a
                             long time. Also note that the user data file system cannot
                             be persistent through this method (it makes no logical
@@ -223,7 +224,7 @@
                 <span class="help_info">
                     <span class="help_link">What will this do?</span>
                     <div class="help_content" style="display: none">
-                        Try to (re)start CloudMan service monitor thread, which is 
+                        Try to (re)start CloudMan service monitor thread, which is
                         responsible for monitoring the status of all of the other
                         services. This should only be used if the CloudMan user
                         interface becomes unresponsive or during debugging.
@@ -324,10 +325,68 @@
         var add_fs_url = "${h.url_for(controller='root',action='add_file_system')}";
         var cloud_type = "${cloud_type}";
     </script>
+    <script type="text/template" id="fileSystems-template">
+        <thead>
+            <tr class="filesystem-tr">
+                <th class="fs-td-20pct">Name</th>
+                <th class="fs-td-15pct">Status</th>
+                <th class="fs-td-20pct">Usage</th>
+                <th class="fs-td-15pct">Controls</td>
+                <th colspan="2"></th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </script>
+    <script type="text/template" id="fs-details-template">
+    <%text filter='trim'>
+        <a class="close"></a>
+        <div class="fs-details-box-header">File system information</div>
+        <table>
+        <tr><th>Name:</th><td><%= name %></td>
+        <tr><th>Status:</th><td><%= status %></td>
+        <tr><th>Mount point:</th><td><%= mount_point %></td>
+        <tr><th>Kind:</th><td><%= kind %></td>
+        <tr><th>Size (used/total):</th><td><%= size_used %>/<%= size %> (<%= size_pct %>)</td>
+        <tr><th>Delete on termination:</th><td><%= DoT %></td>
+    </%text>
+    </script>
+    <script type="text/template" id="fileSystem-template">
+    <%text filter='trim'>
+        <td class="fs-td-20pct"><%= name %></td>
+        <td class="fs-status fs-td-15pct"><%= status %></td>
+        <td class="fs-td-20pct">
+        <!-- // Only disply usage when the file system is 'Available' -->
+        <% if (status === "Available" || status === "Running") { %>
+            <%= size_used %>/<%= size %> (<%= size_pct %>)
+        <% } %></td>
+        <td class="fs-td-15pct">
+        <!-- Only display controls when the file system is 'Available' -->
+        <% if (status === "Available" || status === "Running") { %>
+            <a class="fs-remove icon-button" id="fs-<%= name %>-remove"
+                href="</%text>${h.url_for(controller='root',action='manage_service')}<%text filter='trim'>?service_name=<%= name %>&to_be_started=False&is_filesystem=True"
+                title="Remove this file system"></a>
+            <!-- // It only makes sense to persist DoT, snapshot-based file systems -->
+            <% if (typeof(from_snap) !== "undefined" && typeof(DoT) !== "undefined" && DoT === "Yes") { %>
+                <a class="fs-persist icon-button" id="fs-<%= name %>-persist"
+                    href="</%text>${h.url_for(controller='root', action='update_file_system')}<%text filter='trim'>?fs_name=<%= name %>" title="Persist file system changes"></a>
+            <% } %>
+            <!-- // It only makes sense to resize volume-based file systems -->
+            <% if (typeof(kind) != "undefined" && kind === "Volume" ) { %>
+                <a class="fs-resize icon-button" id="fs-<%= name %>-resize" href="#" title="Increase file system size"></a>
+            <% } %>
+        <% } %></td>
+        <td class="fs-td-15pct">
+            <a href="#" class="fs-details" details-box="fs-<%= name %>-details">Details</a>
+        </td>
+        <td class="fs-td-spacer"></td>
+    </%text>
+    </script>
     <script type='text/javascript' src="${h.url_for('/static/scripts/jquery.form.js')}"></script>
     <script src="//ajax.googleapis.com/ajax/libs/jqueryui/1.8.23/jquery-ui.min.js"></script>
     <script type='text/javascript' src="${h.url_for('/static/scripts/jquery.tipsy.js')}"></script>
     <script type='text/javascript' src="${h.url_for('/static/scripts/underscore-min.js')}"></script>
     <script type='text/javascript' src="${h.url_for('/static/scripts/backbone-min.js')}"></script>
+    <script type='text/javascript' src="${h.url_for('/static/scripts/backbone.marionette.js')}"></script>
+    <script type='text/javascript' src="${h.url_for('/static/scripts/Backbone.ModalDialog.js')}"></script>
     <script type='text/javascript' src="${h.url_for('/static/scripts/admin.js')}"></script>
 </%def>
