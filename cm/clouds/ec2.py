@@ -84,7 +84,7 @@ class EC2Interface(CloudInterface):
             i_id = self.get_instance_id()
             ec2_conn = self.get_ec2_connection()
             try:
-                ir = ec2_conn.get_all_instances([i_id])
+                ir = ec2_conn.get_all_instances(i_id)
                 self.instance = ir[0].instances[0]
             except EC2ResponseError, e:
                 log.debug("Error getting instance object: {0}".format(e))
@@ -151,7 +151,7 @@ class EC2Interface(CloudInterface):
                     pass
         return self.key_pair_name
     
-    def get_self_private_ip( self ):
+    def get_private_ip( self ):
         if self.self_private_ip is None:
             if self.app.TESTFLAG is True:
                 log.debug("Attempted to get key pair name, but TESTFLAG is set. Returning '127.0.0.1'")
@@ -188,7 +188,7 @@ class EC2Interface(CloudInterface):
                     pass
         return self.local_hostname
     
-    def get_self_public_hostname( self ):
+    def get_public_hostname( self ):
         if self.self_public_ip is None:
             if self.app.TESTFLAG is True:
                 log.debug("Attempted to get public hostname, but TESTFLAG is set. Returning '127.0.0.1'")
@@ -207,7 +207,7 @@ class EC2Interface(CloudInterface):
                                 
         return self.self_public_ip
     
-    def get_self_public_ip( self ):
+    def get_public_ip( self ):
         if self.self_public_ip is None:
             if self.app.TESTFLAG is True:
                 log.debug("Attempted to get public IP, but TESTFLAG is set. Returning '127.0.0.1'")
@@ -290,22 +290,32 @@ class EC2Interface(CloudInterface):
         """ Add tag as key value pair to the `resource` object. The `resource`
         object must be an instance of a cloud object and support tagging.
         """
-        try:
-            log.debug("Adding tag '%s:%s' to resource '%s'" \
-                % (key, value, resource.id if resource.id else resource))
-            resource.add_tag(key, value)
-        except EC2ResponseError, e:
-            log.error("Exception adding tag '%s:%s' to resource '%s': %s" % (key, value, resource, e))
+        if not self.tags_not_supported:
+            try:
+                log.debug("Adding tag '%s:%s' to resource '%s'" % (key, value, resource.id if resource.id else resource))
+                resource.add_tag(key, value)
+            except EC2ResponseError, e:
+                log.error("Exception adding tag '%s:%s' to resource '%s': %s" % (key, value, resource, e))
+                self.tags_not_supported = True
+        resource_tags = self.tags.get(resource.id, {})
+        resource_tags[key] = value
+        self.tags[resource.id] = resource_tags
     
     def get_tag(self, resource, key):
         """ Get tag on `resource` cloud object. Return None if tag does not exist.
         """
-        try:
-            log.debug("Getting tag '%s' on resource '%s'" % (key, resource.id))
-            return resource.tags.get(key, None)
-        except EC2ResponseError, e:
-            log.error("Exception getting tag '%s' on resource '%s': %s" % (key, resource, e))
-            return None
+        value = None
+        if not self.tags_not_supported:
+            try:
+                log.debug("Getting tag '%s' on resource '%s'" % (key, resource.id))
+                value = resource.tags.get(key, None)
+            except EC2ResponseError, e:
+                log.error("Exception getting tag '%s' on resource '%s': %s" % (key, resource, e))
+                self.tags_not_supported = True
+        if not value:
+            resource_tags = self.tags.get(resource.id,{})
+            value = resource_tags.get(key)
+        return value    
     
     def run_instances(self, num, instance_type, spot_price=None, **kwargs):
         use_spot = False
@@ -324,12 +334,12 @@ class EC2Interface(CloudInterface):
         else:
             self._run_ondemand_instances(num, instance_type, spot_price, worker_ud)
         
-    def _run_ondemand_instances(self, num, instance_type, spot_price, worker_ud):
+    def _run_ondemand_instances(self, num, instance_type, spot_price, worker_ud, min_num=1):
         worker_ud_str = "\n".join(['%s: %s' % (key, value) for key, value in worker_ud.iteritems()])
         log.debug("Starting instance(s) with the following command : ec2_conn.run_instances( "
-              "image_id='{iid}', min_count=1, max_count='{num}', key_name='{key}', "
+              "image_id='{iid}', min_count='{min_num}, max_count='{num}', key_name='{key}', "
               "security_groups=['{sgs}'], user_data=[{ud}], instance_type='{type}', placement='{zone}')"
-              .format(iid=self.get_ami(), num=num, key=self.get_key_pair_name(), \
+              .format(iid=self.get_ami(), min_num=min_num, num=num, key=self.get_key_pair_name(), \
               sgs=", ".join(self.get_security_groups()), ud=worker_ud_str, type=instance_type, \
               zone=self.get_zone()))
         try:
@@ -337,7 +347,7 @@ class EC2Interface(CloudInterface):
             reservation = None
             ec2_conn = self.get_ec2_connection()
             reservation = ec2_conn.run_instances( image_id=self.get_ami(),
-                                                  min_count=1,
+                                                  min_count=min_num,
                                                   max_count=num,
                                                   key_name=self.get_key_pair_name(),
                                                   security_groups=self.get_security_groups(),
@@ -413,7 +423,7 @@ class EC2Interface(CloudInterface):
             ec2_conn.terminate_instances([instance_id])
             # Make sure the instance was terminated
             time.sleep(3) # First give the middleware a chance to register the termination
-            rs = ec2_conn.get_all_instances([instance_id])
+            rs = ec2_conn.get_all_instances(instance_id)
             if len(rs) == 0 or rs[0].instances[0].state == 'shutting-down' or \
                 rs[0].instances[0].state == 'terminated':
                 return True
@@ -441,10 +451,15 @@ class EC2Interface(CloudInterface):
         """
         worker_ud = {}
         worker_ud['role'] = 'worker'
-        worker_ud['master_ip'] = self.get_self_private_ip()
+        worker_ud['master_ip'] = self.get_private_ip()
         worker_ud['master_hostname'] = self.get_local_hostname()
         worker_ud['cluster_type'] = self.app.manager.initial_cluster_type
         # Merge the worker's user data with the master's user data
         worker_ud = dict(self.app.ud.items() + worker_ud.items())
         return worker_ud
+
+    def get_all_volumes(self,volume_ids=None, filters=None):
+        return self.get_ec2_connection().get_all_volumes(volume_ids=volume_ids, filters=filters)
     
+    def get_all_instances(self,instance_ids=None,filters=None):
+        return self.get_ec2_connection().get_all_instances(instance_ids=instance_ids,filters=filters)
