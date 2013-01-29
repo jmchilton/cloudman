@@ -16,6 +16,7 @@ from cm.util.decorators import TestFlag
 
 log = logging.getLogger('cloudman')
 
+
 class CM(BaseController):
     @expose
     def index(self, trans, **kwd):
@@ -36,7 +37,8 @@ class CM(BaseController):
                                         initial_cluster_type=initial_cluster_type,
                                         cluster_name=cluster_name,
                                         master_instance_type=self.app.cloud_interface.get_type(),
-                                        use_autoscaling=bool(self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)),
+                                        use_autoscaling=bool(self.app.manager.get_services(
+                                                             svc_role=ServiceRole.AUTOSCALE)),
                                         image_config_support=BunchToo(self.app.config.ic),
                                         CM_url=CM_url,
                                         cloud_type=self.app.ud.get('cloud_type', 'ec2'),
@@ -46,9 +48,7 @@ class CM(BaseController):
 
     @expose
     @TestFlag({})
-    def initialize_cluster(self, trans, startup_opt,
-                           galaxy_data_option="custom-size", pss=None,
-                           shared_bucket=None):
+    def initialize_cluster(self, trans, startup_opt, pss=None, shared_bucket=None):
         """
         Call this method if the current cluster has not yet been initialized to
         initialize it. This method should be called only once.
@@ -249,7 +249,9 @@ class CM(BaseController):
 
     @expose
     def detailed_shutdown(self, trans, galaxy=True, sge=True, postgres=True, filesystems=True, volumes=True, instances=True):
-        self.app.shutdown(sd_galaxy=galaxy, sd_sge=sge, sd_postgres=postgres, sd_filesystems=filesystems, sd_volumes=volumes, sd_instances=instances, sd_volumes_delete=volumes)
+        self.app.shutdown(
+            sd_galaxy=galaxy, sd_sge=sge, sd_postgres=postgres, sd_filesystems=filesystems, sd_volumes=volumes,
+            sd_instances=instances, sd_volumes_delete=volumes)
 
     @expose
     def kill_all(self, trans, terminate_master_instance=False, delete_cluster=False):
@@ -389,7 +391,7 @@ class CM(BaseController):
         Convert a string to unicode in utf-8 format; if string is already unicode,
         does nothing because string's encoding cannot be determined by introspection.
         """
-        a_string_type = type (a_string)
+        a_string_type = type(a_string)
         if a_string_type is str:
             return unicode(a_string, 'utf-8')
         elif a_string_type is unicode:
@@ -398,7 +400,7 @@ class CM(BaseController):
     @expose
     def get_srvc_status(self, trans, srvc):
         return json.dumps({'srvc': srvc,
-                               'status': self.app.manager.get_srvc_status(srvc)})
+                           'status': self.app.manager.get_srvc_status(srvc)})
 
     @expose
     def get_all_services_status(self, trans):
@@ -421,18 +423,20 @@ class CM(BaseController):
 
     @expose
     def full_update(self, trans, l_log=0):
-        return json.dumps({ 'ui_update_data' : self.instance_state_json(trans, no_json=True),
-                                'log_update_data' : self.log_json(trans, l_log, no_json=True),
-                                'messages': self.messages_string(self.app.msgs.get_messages())})
+        return json.dumps(
+            {'ui_update_data': self.instance_state_json(trans, no_json=True),
+             'log_update_data': self.log_json(trans, l_log, no_json=True),
+             'messages': self.messages_string(self.app.msgs.get_messages())})
 
     @expose
     def log_json(self, trans, l_log=0, no_json=False):
         if no_json:
-            return {'log_messages' : self.app.logger.logmessages[int(l_log):],
-                                'log_cursor' : len(self.app.logger.logmessages)}
+            return {'log_messages': self.app.logger.logmessages[int(l_log):],
+                    'log_cursor': len(self.app.logger.logmessages)}
         else:
-            return json.dumps({'log_messages' : self.app.logger.logmessages[int(l_log):],
-                                'log_cursor' : len(self.app.logger.logmessages)})
+            return json.dumps(
+                {'log_messages': self.app.logger.logmessages[int(l_log):],
+                             'log_cursor': len(self.app.logger.logmessages)})
 
     def messages_string(self, messages):
         """
@@ -440,7 +444,8 @@ class CM(BaseController):
         """
         msgs = []
         for msg in messages:
-            msgs.append({'message': msg.message, 'level': msg.level, 'added_at': str(msg.added_at)})
+            msgs.append({'message': msg.message, 'level':
+                        msg.level, 'added_at': str(msg.added_at)})
         return msgs
 
     @expose
@@ -449,7 +454,8 @@ class CM(BaseController):
 
     @expose
     def restart_service(self, trans, service_name, service_role=None):
-        svcs = self.app.manager.get_services(svc_role=service_role, svc_name=service_name)
+        svcs = self.app.manager.get_services(
+            svc_role=service_role, svc_name=service_name)
         if svcs:
             for service in svcs:
                 service.remove()
@@ -471,12 +477,16 @@ class CM(BaseController):
             for service in svcs:
                 service.remove()
             if not db_only:
-                cmd = '%s - galaxy -c "cd %s; hg --config ui.merge=internal:local pull %s --update"' % (paths.P_SU, self.app.path_resolver.galaxy_home, repository)
+                cmd = '%s - galaxy -c "cd %s; hg --config ui.merge=internal:local pull %s --update"' % (
+                    paths.P_SU, self.app.path_resolver.galaxy_home, repository)
                 retval = os.system(cmd)
-                log.debug("Galaxy update cmd '%s'; return value %s" % (cmd, retval))
-            cmd = '%s - galaxy -c "cd %s; sh manage_db.sh upgrade"' % (paths.P_SU, self.app.path_resolver.galaxy_home)
+                log.debug(
+                    "Galaxy update cmd '%s'; return value %s" % (cmd, retval))
+            cmd = '%s - galaxy -c "cd %s; sh manage_db.sh upgrade"' % (
+                paths.P_SU, self.app.path_resolver.galaxy_home)
             retval = os.system(cmd)
-            log.debug("Galaxy DB update cmd '%s'; return value %s" % (cmd, retval))
+            log.debug(
+                "Galaxy DB update cmd '%s'; return value %s" % (cmd, retval))
             for service in svcs:
                 service.start()
             comment = "Done updating Galaxy."
@@ -492,7 +502,8 @@ class CM(BaseController):
         log.info("Received following list of admin users: '%s'" % admin_users)
         if admin_users is not None:
             admins_list = admin_users.split(',')
-            # Test if provided values are in email format and remove non-email formatted ones
+            # Test if provided values are in email format and remove non-email
+            # formatted ones
             admins_list_check = admins_list
             for admin in admins_list_check:
                 m = re.search('(\w+@\w+(?:\.\w+)+)', admin)
@@ -502,7 +513,8 @@ class CM(BaseController):
             svcs = self.app.manager.get_services(svc_role=ServiceRole.GALAXY)
             if len(svcs) > 0 and len(admins_list) > 0:
                 svcs[0].add_galaxy_admin_users(admins_list)
-                log.info("Galaxy admins added: %s; restarting Galaxy" % admins_list)
+                log.info(
+                    "Galaxy admins added: %s; restarting Galaxy" % admins_list)
                 svcs[0].restart()
                 return "Galaxy admins added: %s" % admins_list
             else:
@@ -530,7 +542,8 @@ class CM(BaseController):
             svc_type = ServiceType.FILE_SYSTEM
         else:
             svc_type = ServiceType.APPLICATION
-        svcs = self.app.manager.get_services(svc_type=svc_type, svc_name=service_name)
+        svcs = self.app.manager.get_services(
+            svc_type=svc_type, svc_name=service_name)
         if svcs:
             log.debug("Managing services: %s" % svcs)
             if to_be_started == False:
@@ -555,44 +568,48 @@ class CM(BaseController):
         else:
             log.debug("Turning autoscaling ON")
             if self.check_as_vals(as_min, as_max):
-                self.app.manager.start_autoscaling(int(as_min), int(as_max), instance_type)
+                self.app.manager.start_autoscaling(
+                    int(as_min), int(as_max), instance_type)
             else:
                 log.error("Invalid values for autoscaling bounds (min: %s, max: %s). " +
-                    "Autoscaling is OFF." % (as_min, as_max))
+                          "Autoscaling is OFF." % (as_min, as_max))
         if self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE):
 
-            return json.dumps({'running' : True,
-                                    'as_min' : self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_min,
-                                    'as_max' : self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_max,
-                                    'ui_update_data' : self.instance_state_json(trans, no_json=True)})
+            return json.dumps({'running': True,
+                               'as_min': self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_min,
+                               'as_max': self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_max,
+                               'ui_update_data': self.instance_state_json(trans, no_json=True)})
         else:
-            return json.dumps({'running' : False,
-                                    'as_min' : 0,
-                                    'as_max' : 0,
-                                    'ui_update_data' : self.instance_state_json(trans, no_json=True)})
+            return json.dumps({'running': False,
+                               'as_min': 0,
+                               'as_max': 0,
+                               'ui_update_data': self.instance_state_json(trans, no_json=True)})
 
     @expose
     def adjust_autoscaling(self, trans, as_min_adj=None, as_max_adj=None):
         if self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE):
             if self.check_as_vals(as_min_adj, as_max_adj):
-                # log.debug("Adjusting autoscaling; new bounds min: %s, max: %s" % (as_min_adj, as_max_adj))
-                self.app.manager.adjust_autoscaling(int(as_min_adj), int(as_max_adj))
+                # log.debug("Adjusting autoscaling; new bounds min: %s, max:
+                # %s" % (as_min_adj, as_max_adj))
+                self.app.manager.adjust_autoscaling(
+                    int(as_min_adj), int(as_max_adj))
             else:
-                log.error("Invalid values to adjust autoscaling bounds (min: %s, max: %s)." % (as_min_adj, as_max_adj))
-            return json.dumps({'running' : True,
-                                    'as_min' : self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_min,
-                                    'as_max' : self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_max,
-                                    'ui_update_data' : self.instance_state_json(trans, no_json=True)})
+                log.error("Invalid values to adjust autoscaling bounds (min: %s, max: %s)." % (
+                    as_min_adj, as_max_adj))
+            return json.dumps({'running': True,
+                               'as_min': self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_min,
+                               'as_max': self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_max,
+                               'ui_update_data': self.instance_state_json(trans, no_json=True)})
         else:
-            return json.dumps({'running' : False,
-                                    'as_min' : 0,
-                                    'as_max' : 0,
-                                    'ui_update_data' : self.instance_state_json(trans, no_json=True)})
+            return json.dumps({'running': False,
+                               'as_min': 0,
+                               'as_max': 0,
+                               'ui_update_data': self.instance_state_json(trans, no_json=True)})
 
     def check_as_vals(self, as_min, as_max):
         """ Check if limits for autoscaling are acceptable."""
         if as_min is not None and as_min.isdigit() and int(as_min) >= 0 and int(as_min) < 20 and \
-           as_max is not None and as_max.isdigit() and int(as_max) >= int(as_min) and int(as_max) < 20:
+                as_max is not None and as_max.isdigit() and int(as_max) >= int(as_min) and int(as_max) < 20:
             return True
         else:
             return False
@@ -605,22 +622,25 @@ class CM(BaseController):
                 u_ids = [x.strip() for x in user_ids.split(',')]
                 c_ids = [x.strip() for x in canonical_ids.split(',')]
                 if len(u_ids) != len(c_ids):
-                    log.error("User account ID fields must contain the same number of entries.")
+                    log.error(
+                        "User account ID fields must contain the same number of entries.")
                     return self.instance_state_json(trans)
                 for i, u in enumerate(u_ids):
-                    u_ids[i] = u.replace('-', '')  # Try to remove any dashes, which is the way the number is displayed on AWS
+                    u_ids[i] = u.replace(
+                        '-', '')  # Try to remove any dashes, which is the way the number is displayed on AWS
                     if not u_ids[i].isdigit():
-                        log.error("User IDs must be integers only, not '%s'" % u_ids[i])
+                        log.error(
+                            "User IDs must be integers only, not '%s'" % u_ids[i])
                         return self.instance_state_json(trans)
             except Exception:
-                log.error("Error processing values - user IDs: '%s', canonnical IDs: '%s'" % \
-                    (user_ids, canonical_ids))
+                log.error("Error processing values - user IDs: '%s', canonnical IDs: '%s'" %
+                         (user_ids, canonical_ids))
                 return self.instance_state_json(trans)
         elif visibility == 'public':
             u_ids = c_ids = None
         else:
-            log.error("Incorrect values provided - permissions: '%s', user IDs: '%s', canonnical IDs: '%s'" % \
-                (visibility, u_ids, c_ids))
+            log.error("Incorrect values provided - permissions: '%s', user IDs: '%s', canonnical IDs: '%s'" %
+                     (visibility, u_ids, c_ids))
             return self.instance_state_json(trans)
         self.app.manager.share_a_cluster(u_ids, c_ids)
         return self.instance_state_json(trans, no_json=True)
@@ -631,7 +651,8 @@ class CM(BaseController):
 
     @expose
     def delete_shared_instance(self, trans, shared_instance_folder=None, snap_id=None):
-        shared_instance_folder = '/'.join((shared_instance_folder.split('/')[1:]))
+        shared_instance_folder = '/'.join(
+            (shared_instance_folder.split('/')[1:]))
         return self.app.manager.delete_shared_instance(shared_instance_folder, snap_id)
 
     @expose
@@ -699,12 +720,12 @@ class CM(BaseController):
     def static_instance_state_json(self, trans, no_json=False):
         ret_dict = {'master_ip': self.app.cloud_interface.get_public_ip(),
                     'master_id': self.app.cloud_interface.get_instance_id(),
-                    'ami_id' : self.app.cloud_interface.get_ami(),
-                    'availability_zone' : self.app.cloud_interface.get_zone(),
-                    'key_pair_name' : self.app.cloud_interface.get_key_pair_name(),
-                    'security_groups' : self.app.cloud_interface.get_security_groups(),
+                    'ami_id': self.app.cloud_interface.get_ami(),
+                    'availability_zone': self.app.cloud_interface.get_zone(),
+                    'key_pair_name': self.app.cloud_interface.get_key_pair_name(),
+                    'security_groups': self.app.cloud_interface.get_security_groups(),
                     'master_host_name': self.app.cloud_interface.get_public_hostname()
-                   }
+                    }
         if no_json:
             return ret_dict
         else:
@@ -717,16 +738,16 @@ class CM(BaseController):
         ret_dict = {'cluster_status': self.app.manager.get_cluster_status(),
                     'dns': dns,
                     'instance_status': {'idle': str(len(self.app.manager.get_idle_instances())),
-                                        'available' : str(self.app.manager.get_num_available_workers()),
-                                        'requested' : str(len(self.app.manager.worker_instances))},
-                    'disk_usage': {'used':str(self.app.manager.disk_used),
-                                    'total':str(self.app.manager.disk_total),
-                                    'pct':str(self.app.manager.disk_pct)},
+                                        'available': str(self.app.manager.get_num_available_workers()),
+                                        'requested': str(len(self.app.manager.worker_instances))},
+                    'disk_usage': {'used': str(self.app.manager.disk_used),
+                                   'total': str(self.app.manager.disk_total),
+                                   'pct': str(self.app.manager.disk_pct)},
                     'data_status': self.app.manager.get_data_status(),
                     'app_status': self.app.manager.get_app_status(),
-                    'all_fs' : self.app.manager.all_fs_status_array(),
-                    'snapshot' : {'status' : str(snap_status[0]),
-                                  'progress' : str(snap_status[1])},
+                    'all_fs': self.app.manager.all_fs_status_array(),
+                    'snapshot': {'status': str(snap_status[0]),
+                                 'progress': str(snap_status[1])},
                     'autoscaling': {'use_autoscaling': bool(self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)),
                                     'as_min': 'N/A' if not self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE) else self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_min,
                                     'as_max': 'N/A' if not self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE) else self.app.manager.get_services(svc_role=ServiceRole.AUTOSCALE)[0].as_max}
@@ -738,7 +759,7 @@ class CM(BaseController):
 
     @expose
     def update_users_CM(self, trans):
-        return json.dumps({'updated':self.app.manager.update_users_CM()})
+        return json.dumps({'updated': self.app.manager.update_users_CM()})
 
     @expose
     def masthead(self, trans):
