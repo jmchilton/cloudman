@@ -107,7 +107,7 @@ class Migrate1to2:
 
     def _update_user_data(self):
         if 'filesystems' in self.app.ud:
-            old_fs_list = self.app.ud['filesystems']
+            old_fs_list = self.app.ud.get('filesystems') or []
             new_fs_list = []
             # clear 'services' and replace with the new format
             for fs in old_fs_list:
@@ -193,7 +193,7 @@ class MigrationService(ApplicationService, Migrate1to2):
         self.dependencies = []
 
         if 'filesystems' in self.app.ud:
-            for fs in self.app.ud['filesystems']:
+            for fs in self.app.ud.get('filesystems') or []:
                 # Wait for galaxy data, indices and tools to come up before attempting migration
                 if  ServiceRole.GALAXY_DATA in ServiceRole.from_string_array(fs['roles']):
                     self.dependencies.append(ServiceDependency(self, ServiceRole.GALAXY_DATA))
