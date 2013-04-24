@@ -67,7 +67,7 @@
 							            <input type="number" name="number_nodes" value="1" min="1" step="1" required="true"/>
 							            <label><a href="http://aws.amazon.com/ec2/#instance" target="_blank">Type</a> of node(s):</label>
 							            <select name="instance_type" id="instance_type">
-							            	<%include file="clouds/${cloud_name}/instance_types.mako" />
+							            	<%include file="instance_types.mako" />
 							            </select>
 							            ## Spot instances work only for the AWS cloud
 							            <br /><br />
@@ -462,7 +462,7 @@
                 </div>
                 <label>Type of Nodes(s):</label>
                 <select name="instance_type" id="instance_type">
-					<%include file="clouds/${cloud_name}/instance_types.mako" />
+					<%include file="instance_types.mako" />
 				</select>
             </div>
         </div>

@@ -13,6 +13,36 @@ import hoover
 
 log = logging.getLogger('cloudman')
 
+DEFAULT_INSTANCE_TYPES = [
+    ("", "Same as Master"),
+    ("group", "Micro Instances", [
+      ("t1.micro", "Micro (t1.micro)", "Cores: Up to 2 EC2 Compute Units, Memory: 613MB, IO-Perf: Low, EBS-Optimized: No"),
+    ]),
+    ("group", "Standard Instances", [
+      ("m1.small", "Small (m1.small)", "Cores: 1 virtual core with 1 EC2 Compute Unit, Memory: 1.7GB, IO-Perf: Moderate, EBS-Optimized: No"),
+      ("m1.medium", "Medium (m1.medium)", "Cores: 1 virtual core with 2 EC2 Compute Units, Memory: 3.75GB, IO-Perf: Moderate, EBS-Optimized: No"),
+      ("m1.large", "Large (m1.large)", "Cores: 2 virtual cores with 2 EC2 Compute Units each, Memory: 7.5GB, IO-Perf: Moderate, EBS-Optimized: 500 Mbps"),
+      ("m1.xlarge", "Extra Large (m1.xlarge)", "Cores: 4 virtual cores with 2 EC2 Compute Units each, Memory: 15GB, IO-Perf: High, EBS-Optimized: 1000 Mbps"),
+      ("m3.xlarge", "M3 Extra Large (m3.xlarge)", "Cores: 4 virtual cores with 3.25 EC2 Compute Units each, Memory: 15GB, IO-Perf: Moderate, EBS-Optimized: 500 Mbps"),
+      ("m3.2xlarge", "Double Extra Large (m3.2xlarge)", "Cores: 8 virtual cores with 3.25 EC2 Compute Units each, Memory: 30GB, IO-Perf: High, EBS-Optimized: 1000 Mbps"),
+    ]),
+    ("group", "High-Memory Instances", [
+      ("m2.xlarge", "High-Memory Extra Large Instance (m2.xlarge)", "Cores: 2 virtual cores with 3.25 EC2 Compute Units each, Memory: 17.1GB, IO-Perf: Moderate, EBS-Optimized: No"),
+      ("m2.2xlarge", "High-Memory Double Extra Large Instance (m2.2xlarge)", "Cores: 4 virtual cores with 3.25 EC2 Compute Units each, Memory: 34.2GB, IO-Perf: High, EBS-Optimized: 500 Mbps"),
+      ("m2.4xlarge", "High-Memory Quadruple Extra Large Instance (m2.4xlarge)", "Cores: 8 virtual cores with 3.25 EC2 Compute Units each, Memory: 68.4GB, IO-Perf: High, EBS-Optimized: 1000 Mbps"),
+    ]),
+    ("group", "High-CPU Instances", [
+      ("c1.medium", "High-CPU Medium Instance (c1.medium)", "Cores: 2 virtual cores with 2.5 EC2 Compute Units each, Memory: 1.7GB, IO-Perf: Moderate, EBS-Optimized: No"),
+      ("c1.xlarge", "High-CPU Extra Large Instance (c1.xlarge)", "Cores: 8 virtual cores with 2.5 EC2 Compute Units each, Memory: 34.2GB, IO-Perf: High, EBS-Optimized: 1000 Mbps"),
+    ]),
+    ("group", "Cluster Compute Instances", [
+      ("cc2.8xlarge", "Cluster Compute Eight Extra Large Instance (cc2.8xlarge)", "Cores: 2 x Intel Xeon E5-2670, eight-core, Memory: 60.5GB, IO-Perf: V. High (10 Gigabit Ethernet), EBS-Optimized: No"),
+    ]),
+    ("group", "High Memory Cluster Instances", [
+      ("cr1.8xlarge", "High Memory Cluster Eight Extra Large Instance (cr1.8xlarge)", "Cores: 2 x Intel Xeon E5-2670, eight-core. Intel Turbo, NUMA, Memory: 244GB, IO-Perf: V. High (10 Gigabit Ethernet), EBS-Optimized: No"),
+    ]),
+]
+
 
 def resolve_path(path, root):
     """If 'path' is relative make absolute by prepending 'root'"""
@@ -72,6 +102,7 @@ class Configuration(object):
             self.ic = misc.load_yaml_file(paths.IMAGE_CONF_SUPPORT_FILE)
         # Logger is not configured yet so print
         print "Image configuration suports: %s" % self.ic
+        self.instance_types = []
 
     def get(self, key, default):
         return self.config_dict.get(key, default)
@@ -152,3 +183,41 @@ def configure_logging(config, user_data={}):
         loggly_handler = hoover.LogglyHttpHandler(token=loggly_token)
         loggly_handler.setFormatter(formatter)
         log.addHandler(loggly_handler)
+
+
+def configure_instance_types(config, user_data):
+    cloud_name = user_data.get('cloud_name', 'amazon').lower()
+    if "instance_types" in user_data:
+        ## Manually specified instance types
+        user_data_instance_types = user_data["instance_types"]
+        instance_types = [(type_def["key"], type_def["name"]) for type_def in user_data_instance_types]
+    elif cloud_name == "nectar":
+        instance_types = [
+            ("", "Same as Master"),
+            ("m1.small", "Small (m1.small)", "Cores: 1 VCPU, Memory: 4GB"),
+            ("m1.medium", "Medium (m1.medium)", "Cores: 2 VCPU, Memory: 8GB"),
+            ("m1.large", "Large (m1.large)", "Cores: 4 VCPU, Memory: 16GB"),
+            ("m1.xlarge", "Extra Large (m1.xlarge)", "Cores: 8 VCPU, Memory: 32GB"),
+            ("m1.xxlarge", "Extra Large (m1.xxlarge)", "Cores: 16 VCPU, Memory: 64GB")
+        ]
+    elif cloud_name == "hpcloud":
+        instance_types = [
+            ("", "Same as Master"),
+            ("standard.xsmall", "Extra Small"),
+            ("standard.small", "Small"),
+            ("standard.medium", "Medium"),
+            ("standard.large", "Large"),
+            ("standard.xlarge", "Extra Large"),
+            ("standard.2xlarge", "Extra Extra Large"),
+        ]
+    elif cloud_name == "ict-tas":
+        instance_types = [
+            ("", "Same as Master"),
+            ("m1.small", "Small"),
+            ("m1.medium", "Medium"),
+            ("m1.xlarge", "Extra Large"),
+            ("m1.xxlarge", "Extra Extra Large"),
+        ]
+    else:
+        instance_types = DEFAULT_INSTANCE_TYPES
+    config.instance_types = instance_types

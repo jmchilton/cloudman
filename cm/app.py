@@ -64,6 +64,7 @@ class UniverseApplication(object):
             self.logger.setLevel(logging.INFO)
         log.addHandler(self.logger)
         config.configure_logging(self.config, self.ud)
+        config.configure_instance_types(self.config, self.ud)
         log.debug("Initializing app")
         log.debug("Running on '{0}' type of cloud in zone '{1}' using image '{2}'."
                   .format(self.cloud_type, self.cloud_interface.get_zone(),
