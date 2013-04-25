@@ -116,6 +116,16 @@ class Configuration(object):
 
     def init_with_user_data(self, user_data):
         self.__configure_instance_types(user_data)
+        self.__configure_instance_management(user_data)
+
+    def __configure_instance_management(self, user_data):
+        """Configure attributes used control reboot/terminate behavior
+        of cm.util.master:Instance."""
+        #self.instance_reboot_timeout = user_data.get("instance_reboot_timeout", 300)
+        self.instance_comm_timeout = user_data.get("instance_comm_timeout", 180)
+        #self.instance_state_change_wait = user_data.get("instance_state_change_wait", 400)
+        #self.instance_reboot_attempts = user_data.get("instance_reboot_attempts", 4)
+        #self.instance_terminate_attempts = user_data.get("instance_terminate_attempts", 4)
 
     def __configure_instance_types(self, user_data):
         cloud_name = user_data.get('cloud_name', 'amazon').lower()
