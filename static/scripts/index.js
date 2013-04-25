@@ -216,7 +216,7 @@ cloudmanIndexModule.controller('cmLoadGraphController', [
                     if (result == 'confirm') {
                         $http.get(reboot_url, {
                             params : {
-                                instanceid : node.instance.id
+                                instance_id : node.instance.id
                             }
                         }).success(function(data) {
                             cmAlertService.addAlert("Node reboot initiated...", "info");
@@ -244,7 +244,7 @@ cloudmanIndexModule.controller('cmLoadGraphController', [
                     if (result == 'confirm') {
                         $http.get(terminate_url, {
                             params : {
-                                instanceid : node.instance.id
+                                instance_id : node.instance.id
                             }
                         }).success(function(data) {
                             cmAlertService.addAlert("Node terminate initiated...", "info");
