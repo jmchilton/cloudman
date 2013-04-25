@@ -46,6 +46,7 @@ class UniverseApplication(object):
             "use_volumes", self.cloud_type not in ['opennebula', 'dummy'])
         # Read config file and check for errors
         self.config = config.Configuration(**kwargs)
+        self.config.init_with_user_data(self.ud)
         self.config.check()
         # Setup logging
         self.logger = CMLogHandler(self)
@@ -64,7 +65,6 @@ class UniverseApplication(object):
             self.logger.setLevel(logging.INFO)
         log.addHandler(self.logger)
         config.configure_logging(self.config, self.ud)
-        config.configure_instance_types(self.config, self.ud)
         log.debug("Initializing app")
         log.debug("Running on '{0}' type of cloud in zone '{1}' using image '{2}'."
                   .format(self.cloud_type, self.cloud_interface.get_zone(),

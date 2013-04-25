@@ -114,6 +114,46 @@ class Configuration(object):
                 raise ConfigurationError(
                     "Directory does not exist: %s" % path)
 
+    def init_with_user_data(self, user_data):
+        self.__configure_instance_types(user_data)
+
+    def __configure_instance_types(self, user_data):
+        cloud_name = user_data.get('cloud_name', 'amazon').lower()
+        if "instance_types" in user_data:
+            ## Manually specified instance types
+            user_data_instance_types = user_data["instance_types"]
+            instance_types = [(type_def["key"], type_def["name"]) for type_def in user_data_instance_types]
+        elif cloud_name == "nectar":
+            instance_types = [
+                ("", "Same as Master"),
+                ("m1.small", "Small (m1.small)", "Cores: 1 VCPU, Memory: 4GB"),
+                ("m1.medium", "Medium (m1.medium)", "Cores: 2 VCPU, Memory: 8GB"),
+                ("m1.large", "Large (m1.large)", "Cores: 4 VCPU, Memory: 16GB"),
+                ("m1.xlarge", "Extra Large (m1.xlarge)", "Cores: 8 VCPU, Memory: 32GB"),
+                ("m1.xxlarge", "Extra Large (m1.xxlarge)", "Cores: 16 VCPU, Memory: 64GB")
+            ]
+        elif cloud_name == "hpcloud":
+            instance_types = [
+                ("", "Same as Master"),
+                ("standard.xsmall", "Extra Small"),
+                ("standard.small", "Small"),
+                ("standard.medium", "Medium"),
+                ("standard.large", "Large"),
+                ("standard.xlarge", "Extra Large"),
+                ("standard.2xlarge", "Extra Extra Large"),
+            ]
+        elif cloud_name == "ict-tas":
+            instance_types = [
+                ("", "Same as Master"),
+                ("m1.small", "Small"),
+                ("m1.medium", "Medium"),
+                ("m1.xlarge", "Extra Large"),
+                ("m1.xxlarge", "Extra Extra Large"),
+            ]
+        else:
+            instance_types = DEFAULT_INSTANCE_TYPES
+        self.instance_types = instance_types
+
 
 def get_database_engine_options(kwargs):
     """
@@ -183,41 +223,3 @@ def configure_logging(config, user_data={}):
         loggly_handler = hoover.LogglyHttpHandler(token=loggly_token)
         loggly_handler.setFormatter(formatter)
         log.addHandler(loggly_handler)
-
-
-def configure_instance_types(config, user_data):
-    cloud_name = user_data.get('cloud_name', 'amazon').lower()
-    if "instance_types" in user_data:
-        ## Manually specified instance types
-        user_data_instance_types = user_data["instance_types"]
-        instance_types = [(type_def["key"], type_def["name"]) for type_def in user_data_instance_types]
-    elif cloud_name == "nectar":
-        instance_types = [
-            ("", "Same as Master"),
-            ("m1.small", "Small (m1.small)", "Cores: 1 VCPU, Memory: 4GB"),
-            ("m1.medium", "Medium (m1.medium)", "Cores: 2 VCPU, Memory: 8GB"),
-            ("m1.large", "Large (m1.large)", "Cores: 4 VCPU, Memory: 16GB"),
-            ("m1.xlarge", "Extra Large (m1.xlarge)", "Cores: 8 VCPU, Memory: 32GB"),
-            ("m1.xxlarge", "Extra Large (m1.xxlarge)", "Cores: 16 VCPU, Memory: 64GB")
-        ]
-    elif cloud_name == "hpcloud":
-        instance_types = [
-            ("", "Same as Master"),
-            ("standard.xsmall", "Extra Small"),
-            ("standard.small", "Small"),
-            ("standard.medium", "Medium"),
-            ("standard.large", "Large"),
-            ("standard.xlarge", "Extra Large"),
-            ("standard.2xlarge", "Extra Extra Large"),
-        ]
-    elif cloud_name == "ict-tas":
-        instance_types = [
-            ("", "Same as Master"),
-            ("m1.small", "Small"),
-            ("m1.medium", "Medium"),
-            ("m1.xlarge", "Extra Large"),
-            ("m1.xxlarge", "Extra Extra Large"),
-        ]
-    else:
-        instance_types = DEFAULT_INSTANCE_TYPES
-    config.instance_types = instance_types
