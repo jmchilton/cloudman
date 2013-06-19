@@ -71,7 +71,7 @@ class LwrService(ApplicationService):
             self.state = service_states.ERROR
 
     def _run(self, args):
-        command = '%s - galaxy -c "sh %s/run.sh %s"' % (
+        command = '%s - galaxy -c "bash %s/run.sh %s"' % (
             paths.P_SU, self.lwr_home, args)
         return misc.run(command, INVOKE_FAILURE, INVOKE_SUCCESS)
 
