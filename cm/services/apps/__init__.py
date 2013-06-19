@@ -1,5 +1,6 @@
 import commands
 import os
+from socket import socket, AF_INET, SOCK_STREAM
 from cm.util import paths
 
 
@@ -75,3 +76,14 @@ class ApplicationService(Service):
             return commands.getoutput("head -n 1 %s" % pid_file)
         else:
             return -1
+
+    def _port_bound(self, port):
+        """
+        Determine if any process is listening on localhost on specified port.
+        """
+        s = socket(AF_INET, SOCK_STREAM)
+        try:
+            result = s.connect_ex(('127.0.0.1', port))
+            return result == 0
+        finally:
+            s.close()

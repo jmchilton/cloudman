@@ -14,6 +14,7 @@ log = logging.getLogger('cloudman')
 
 INVOKE_SUCCESS = "Successfully invoked LWR."
 INVOKE_FAILURE = "Error invoking LWR."
+DEFAULT_LWR_PORT = 8913
 
 
 class LwrService(ApplicationService):
@@ -21,6 +22,7 @@ class LwrService(ApplicationService):
     def __init__(self, app):
         super(LwrService, self).__init__(app)
         self.lwr_home = self.app.path_resolver.lwr_home
+        self.lwr_port = DEFAULT_LWR_PORT
         self.name = ServiceRole.to_string(ServiceRole.LWR)
         self.svc_roles = [ServiceRole.LWR]
         self.dependencies = [
@@ -35,12 +37,7 @@ class LwrService(ApplicationService):
         return self.__rel_path("server.ini")
 
     def _check_lwr_running(self):
-        dns = "http://127.0.0.1:8913"
-        try:
-            urllib2.urlopen(dns)
-            return True
-        except:
-            return False
+        return self._port_bound(self.lwr_port)
 
     def start(self):
         self.state = service_states.STARTING
