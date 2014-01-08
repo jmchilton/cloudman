@@ -12,41 +12,35 @@ import json
 import shutil
 
 
-from cm.util import misc, comm, Time
-from cm.util import (
-    cluster_status, instance_states, instance_lifecycle, spot_states)
-from cm.util.manager import BaseConsoleManager
-from cm.services.autoscale import Autoscale
+from cm.services import ServiceRole
+from cm.services import ServiceType
 from cm.services import service_states
-from cm.services.data.filesystem import Filesystem
-from cm.services.apps.pss import PSS
-from cm.services.apps.migration_service import MigrationService
-from cm.services.apps.sge import SGEService
-from cm.services.apps.hadoop import HadoopService
-from cm.services.apps.htcondor import HTCondorService
-from cm.services.apps.proftpd import ProFTPdService
 from cm.services.apps.galaxy import GalaxyService
 from cm.services.apps.galaxy_reports import GalaxyReportsService
+from cm.services.apps.hadoop import HadoopService
+from cm.services.apps.htcondor import HTCondorService
+from cm.services.apps.migration import MigrationService
 from cm.services.apps.postgres import PostgresService
-from cm.services import ServiceType
-from cm.services import ServiceRole
+from cm.services.apps.proftpd import ProFTPdService
+from cm.services.apps.pss import PSSService
+from cm.services.apps.sge import SGEService
+from cm.services.autoscale import Autoscale
+from cm.services.data.filesystem import Filesystem
+from cm.util import (cluster_status, comm, instance_lifecycle, instance_states,
+        misc, spot_states, Time)
 from cm.util.decorators import TestFlag
+from cm.util.manager import BaseConsoleManager
 
 import cm.util.paths as paths
 from boto.exception import EC2ResponseError, S3ResponseError
 
 log = logging.getLogger('cloudman')
 
-APP_SERVICES = {
-    ServiceRole.to_string(ServiceRole.GALAXY): GalaxyService,
-    ServiceRole.to_string(ServiceRole.GALAXY_POSTGRES): PostgresService,
-    ServiceRole.to_string(ServiceRole.GALAXY_REPORTS): GalaxyReportsService
-}
-
 # Time well in past to seend reboot, last comm times with.
 TIME_IN_PAST = dt.datetime(2012, 1, 1, 0, 0, 0)
 
 s3_rlock = threading.RLock()
+
 
 def synchronized(rlock):
     """
@@ -90,11 +84,15 @@ class ConsoleManager(BaseConsoleManager):
         self.services = []
         # Static data - get snapshot IDs from the default bucket and add respective file systems
         self.snaps = self._load_snapshot_data()
-        self.default_galaxy_data_size = None
+        self.default_galaxy_data_size = 0
 
     def add_master_service(self, new_service):
-        self.services.append(new_service)
-        self._update_dependencies(new_service, "ADD")
+        if not self.get_services(svc_name=new_service.name):
+            log.debug("Adding service %s into the master service registry" % new_service.name)
+            self.services.append(new_service)
+            self._update_dependencies(new_service, "ADD")
+        else:
+            log.debug("Would add master service %s but one already exists" % new_service.name)
 
     def remove_master_service(self, service_to_remove):
         self.services.remove(service_to_remove)
@@ -220,28 +218,36 @@ class ConsoleManager(BaseConsoleManager):
         # Get a list of default file system data sources
         if s3_conn and misc.get_file_from_bucket(s3_conn, self.app.ud['bucket_default'],
            'snaps.yaml', snaps_file):
-            snaps_file = misc.load_yaml_file(snaps_file)
-            if 'static_filesystems' in snaps_file:
-                # Old snaps.yaml format
-                snaps = snaps_file['static_filesystems']
-                # Convert the old format into the new one and return a
-                # uniform snaps dict
-                for f in snaps:
-                    f['name'] = f['filesystem']  # Rename the key
-                    f.pop('filesystem', None)  # Delete the old key
-            else:
-                # Unify all Amazon regions and/or name variations to a single one
-                if 'amazon' in cloud_name:
-                    cloud_name = 'amazon'
-                for cloud in snaps_file['clouds']:
-                    if cloud_name in cloud['name']:
-                        current_cloud = cloud
-                        for r in current_cloud['regions']:
-                            if r['name'] == self.app.cloud_interface.get_region_name():
-                                for d in r['deployments']:
-                                    # TODO: Make the deployment name a UD option
-                                    if d['name'] == 'GalaxyCloud':
-                                        snaps = d['filesystems']
+            pass
+        elif misc.get_file_from_public_bucket(self.app.ud, self.app.ud['bucket_default'], 'snaps.yaml', snaps_file):
+            log.warn("Couldn't get snaps.yaml from bucket: %s. However, managed to retrieve from public s3 url instead." % self.app.ud['bucket_default'])
+        else:
+            log.error("Couldn't get snaps.yaml at all! Will not be able to create Galaxy Data and Index volumes.")
+            return []
+
+        snaps_file = misc.load_yaml_file(snaps_file)
+        if 'static_filesystems' in snaps_file:
+            # Old snaps.yaml format
+            snaps = snaps_file['static_filesystems']
+            # Convert the old format into the new one and return a
+            # uniform snaps dict
+            for f in snaps:
+                f['name'] = f['filesystem']  # Rename the key
+                f.pop('filesystem', None)  # Delete the old key
+        else:
+            # Unify all Amazon regions and/or name variations to a single one
+            if 'amazon' in cloud_name:
+                cloud_name = 'amazon'
+            for cloud in snaps_file['clouds']:
+                if cloud_name == cloud['name'].lower():
+                    current_cloud = cloud
+                    for r in current_cloud['regions']:
+                        if r['name'].lower() == self.app.cloud_interface.get_region_name().lower():
+                            for d in r['deployments']:
+                                # TODO: Make the deployment name a UD option
+                                if d['name'] == 'GalaxyCloud':
+                                    snaps = d['filesystems']
+
         log.debug("Loaded default snapshot data for cloud {1}: {0}".format(snaps,
             cloud_name))
         return snaps
@@ -252,11 +258,14 @@ class ConsoleManager(BaseConsoleManager):
             for snap in self.snaps:
                 roles = ServiceRole.from_string_array(snap['roles'])
                 if ServiceRole.GALAXY_DATA in roles:
-                    self.snapshot = (self.app.cloud_interface.get_ec2_connection()
-                        .get_all_snapshots([snap['snap_id']])[0])
-                    self.default_galaxy_data_size = self.snapshot.volume_size
+                    if 'size' in snap:
+                        self.default_galaxy_data_size = snap['size']
+                    elif 'snap_id' in snap:
+                        self.snapshot = (self.app.cloud_interface.get_ec2_connection()
+                            .get_all_snapshots([snap['snap_id']])[0])
+                        self.default_galaxy_data_size = self.snapshot.volume_size
                     log.debug("Got default galaxy FS size as {0}GB".format(
-                        self.default_galaxy_data_size))
+                            self.default_galaxy_data_size))
         return str(self.default_galaxy_data_size)
 
     @TestFlag(False)
@@ -266,7 +275,8 @@ class ConsoleManager(BaseConsoleManager):
         and start available cluster services (as provided in the cluster's
         configuration and persistent data).
         """
-        log.debug("ud at manager start: %s" % self.app.ud)
+        log.debug("User Data at manager start, with secret_key and password filtered out: %s" %
+                dict((k, self.app.ud[k]) for k in self.app.ud.keys() if k not in ['password', 'secret_key']))
 
         self._handle_prestart_commands()
         # Generating public key before any worker has been initialized
@@ -286,7 +296,7 @@ class ConsoleManager(BaseConsoleManager):
         self.add_master_service(tfs)
         # Always add PSS service - note that this service runs only after the cluster
         # type has been selected and all of the services are in RUNNING state
-        self.add_master_service(PSS(self.app))
+        self.add_master_service(PSSService(self.app))
 
         if self.app.config.condor_enabled:
             self.add_master_service(HTCondorService(self.app, "master"))
@@ -373,6 +383,12 @@ class ConsoleManager(BaseConsoleManager):
                                     from_snapshot_id=att_vol.snapshot_id)
                             else:
                                 filesystem.add_volume(from_snapshot_id=snap)
+                    elif fs['kind'] == 'nfs':
+                        filesystem.add_nfs(fs['nfs_server'], None, None)
+                    elif fs['kind'] == 'gluster':
+                        filesystem.add_glusterfs(fs['gluster_server'])
+                    elif fs['kind'] == 'transient':
+                        filesystem.add_transient_storage(persistent=True)
                     elif fs['kind'] == 'bucket':
                         a_key = fs.get('access_key', None)
                         s_key = fs.get('secret_key', None)
@@ -403,35 +419,56 @@ class ConsoleManager(BaseConsoleManager):
             return False
 
     def add_preconfigured_applications(self):
+        """
+        Dynamically add any previously available applications to the service
+        registry, which will in turn start those apps. The service list is
+        extracted from the user data.
+
+        Note that this method is automatically called when an existing cluster
+        is being recreated.
+
+        In order for the dynamic service loading to work, there are some requirements
+        on the structure of user data and services themselves. Namely, user data
+        must contain a name for the service. The service implementation must be in
+        a module inside ``cm.services.apps`` and it must match the service name
+        (e.g., ``cm.services.apps.proftpd``). The provided service/file name must
+        match the service class without the "Service" string. For example, if service
+        name is ``ProFTPd``, file name must be proftpd.py and the service class
+        name must be ``ProFTPdService``, properly capitilized.
+        """
         try:
+            ok = True  # Flag keeping up with progress
             # Process the current cluster config
-            log.debug("Processing application services in an existing cluster config")
+            log.debug("Processing previously-available application services in "
+                "an existing cluster config")
+            # TODO: Should we inspect a provided path for service availability vs. UD only?
             if "services" in self.app.ud:
+                log.debug("Previously-available applications: {0}"
+                    .format(self.app.ud['services']))
                 for srvc in self.app.ud['services']:
-                    service_roles = ServiceRole.from_string_array(
-                        srvc.get('roles', srvc['name']))
-                    # TODO: translation from predefined service names into
-                    # classes is not quite ideal...
-                    processed_service = False
-                    service_class = APP_SERVICES.get(
-                        ServiceRole.to_string(service_roles), None)
+                    service_class = None
+                    svc_name = srvc.get('name', None)
+                    if svc_name:
+                        # Import service module and get a reference to the service object
+                        try:
+                            module_name = svc_name.lower()
+                            svc_name += "Service"  # Service class name must match this str!
+                            module = __import__('cm.services.apps.' + module_name,
+                                fromlist=[svc_name])
+                            service_class = getattr(module, svc_name)
+                        except Exception, e:
+                            log.warning("Trouble importing service class {0}: {1}"
+                                .format(svc_name, e))
                     if service_class:
+                        # Add the service into the service registry
                         self.add_master_service(service_class(self.app))
-                        processed_service = True
-                    # List of services that get added by default
-                    default_services = [ServiceRole.SGE, ServiceRole.MIGRATION,
-                        ServiceRole.HTCONDOR, ServiceRole.HADOOP]
-                    # if (not processed_service) and (ServiceRole.SGE not in service_roles):  # SGE is added by default:
-                    if not processed_service:
-                        for role in service_roles:
-                            if role not in default_services:
-                            # (ServiceRole.SGE not in service_roles):  # SGE is added by default
-                                log.warning("Could not find service class matching "
-                                    "userData service entry: %s" % srvc['name'])
-            return True
+                    else:
+                        ok = False
+                        log.warning("Could not find service class matching "
+                            "userData service entry: %s" % svc_name)
+            return ok
         except Exception, e:
-            log.error(
-                "Error processing applications in existing cluster configuration: %s" % e)
+            log.error("Error processing applications in existing cluster configuration: %s" % e)
             self.manager_started = False
             return False
 
@@ -527,8 +564,9 @@ class ConsoleManager(BaseConsoleManager):
                 return [s]  # Only one match possible - so return it immediately
             elif svc_role in s.svc_roles:
                 svcs.append(s)
-            elif s.svc_type == svc_type and svc_role == None:
+            elif s.svc_type == svc_type and svc_role is None:
                 svcs.append(s)
+
         return svcs
 
     def all_fs_status_text(self):
@@ -716,7 +754,7 @@ class ConsoleManager(BaseConsoleManager):
         Return a string with either the revision (e.g., ``5757:963e73d40e24``)
         or ``N/A`` if unable to get the revision number.
         """
-        cmd = "%s - galaxy -c \"cd %s; hg tip | grep changeset | cut -d':' -f2,3\"" % (
+        cmd = "%s - galaxy -c \"cd %s; hg tip | grep -m 1 changeset | cut -d':' -f2,3\"" % (
             paths.P_SU, self.app.path_resolver.galaxy_home)
         process = subprocess.Popen(
             cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -800,6 +838,10 @@ class ConsoleManager(BaseConsoleManager):
         else:
             log.warning(
                 "SGE not running thus cannot toggle master as exec host")
+        if self.master_exec_host:
+            log.info("The master instance has been set to execute jobs.  To manually change this, use the cloudman admin panel.")
+        else:
+            log.info("The master instance has been set to *not* execute jobs.  To manually change this, use the cloudman admin panel.")
         return self.master_exec_host
 
     def get_worker_instances(self):
@@ -912,10 +954,11 @@ class ConsoleManager(BaseConsoleManager):
         if delete_cluster:
             self.delete_cluster()
         self.cluster_status = cluster_status.TERMINATED
-        log.info("Cluster shut down at %s (uptime: %s). If not done automatically, "
+        log.info("Cluster %s shut down at %s (uptime: %s). If not done automatically, "
             "manually terminate the master instance (and any remaining instances "
             "associated with this cluster) from the %s cloud console."
-            % (Time.now(), (Time.now() - self.startup_time), self.app.ud.get('cloud_name', '')))
+            % (self.app.ud['cluster_name'], Time.now(), (Time.now() - self.startup_time),
+                self.app.ud.get('cloud_name', '')))
 
     def reboot(self, soft=False):
         if self.app.TESTFLAG is True:
@@ -1150,6 +1193,9 @@ class ConsoleManager(BaseConsoleManager):
             "Initiated requested reboot of instance. Rebooting '%s'." % instance_id)
 
     def add_instances(self, num_nodes, instance_type='', spot_price=None):
+        # Remove master from execution queue automatically
+        if self.master_exec_host:
+            self.toggle_master_as_exec_host()
         self.app.cloud_interface.run_instances(num=num_nodes,
                                                instance_type=instance_type,
                                                spot_price=spot_price)
@@ -1185,7 +1231,7 @@ class ConsoleManager(BaseConsoleManager):
         return False
 
     @TestFlag(None)
-    def init_cluster(self, cluster_type, pss=0):
+    def init_cluster(self, cluster_type, pss=0, storage_type='volume'):
         """
         Initialize the type for this cluster and start appropriate services,
         storing the cluster configuration into the cluster's bucket.
@@ -1234,7 +1280,7 @@ class ConsoleManager(BaseConsoleManager):
                             fs.add_volume(vol_id=att_vol.id,
                                           size=att_vol.size, from_snapshot_id=att_vol.snapshot_id)
                             # snap_size = att_vol.size
-                        else:
+                        elif 'snap_id' in snap:
                             log.debug("There are no volumes already attached for file system {0}"
                                 .format(snap['name']))
                             size = 0
@@ -1242,6 +1288,38 @@ class ConsoleManager(BaseConsoleManager):
                                 size = pss
                             fs.add_volume(size=size, from_snapshot_id=snap['snap_id'])
                             # snap_size = snap.get('size', 0)
+                        elif 'type' in snap:
+                            if 'archive' == snap['type'] and 'archive_url' in snap:
+                                log.debug("Attaching a volume based on an archive named {0}"
+                                    .format(snap['name']))
+                                if storage_type == 'volume':
+                                    if 'size' in snap:
+                                        size = snap['size']
+                                        if ServiceRole.GALAXY_DATA in ServiceRole.from_string_array(snap['roles']):
+                                            if pss > snap['size']:
+                                                size = pss
+                                        fs.add_volume(size=size, from_archive_url=snap['archive_url'])
+                                    else:
+                                        log.error("Format error in snaps.yaml file. No size specified for volume based on archive {0}"
+                                                  .format(snap['name']))
+                                elif storage_type == 'transient':
+                                    fs.add_transient_storage(from_archive_url=snap['archive_url'])
+                                else:
+                                    log.error("Unknown storage type {0} for archive extraction."
+                                              .format(storage_type))
+                            elif 'gluster' == snap['type'] and 'server' in snap:
+                                log.debug("Attaching a glusterfs based filesystem named {0}"
+                                    .format(snap['name']))
+                                fs.add_glusterfs(snap['server'])
+                            elif 'nfs' == snap['type'] and 'server' in snap:
+                                log.debug("Attaching an nfs based filesystem named {0}"
+                                    .format(snap['name']))
+                                fs.add_nfs(snap['server'], None, None)
+                            elif 's3fs' == snap['type'] and 'bucket_name' in snap and 'bucket_a_key' in snap and 'bucket_s_key' in snap:
+                                fs.add_bucket(snap['bucket_name'], snap['bucket_a_key'], snap['bucket_s_key'])
+                            else:
+                                log.error("Format error in snaps.yaml file. Unrecognised or improperly configured type '{0}' for fs named: {1}"
+                                    .format(snap['type]'], snap['name']))
                         log.debug("Adding a filesystem '{0}' with volumes '{1}'"\
                             .format(fs.get_full_name(), fs.volumes))
                         self.add_master_service(fs)
@@ -1254,6 +1332,8 @@ class ConsoleManager(BaseConsoleManager):
             self.add_master_service(ProFTPdService(self.app))
             # Add Galaxy service
             self.add_master_service(GalaxyService(self.app))
+            # Add Galaxy Reports service
+            self.add_master_service(GalaxyReportsService(self.app))
         elif cluster_type == 'Data':
             # Add a file system for user's data if one doesn't already exist
             _add_data_fs()
@@ -1299,7 +1379,7 @@ class ConsoleManager(BaseConsoleManager):
         # Copy contents of the shared cluster's bucket to the current cluster's
         # bucket
         fl = "shared_instance_file_list.txt"
-        if misc.get_file_from_bucket( s3_conn, bucket_name,
+        if misc.get_file_from_bucket(s3_conn, bucket_name,
                 os.path.join(cluster_config_prefix, fl), fl, validate=False):
             key_list = misc.load_yaml_file(fl)
             for key in key_list:
@@ -1341,7 +1421,7 @@ class ConsoleManager(BaseConsoleManager):
                                     'kind': 'volume',
                                     'mount_point': '/mnt/galaxy',
                                     'name': 'galaxy',
-                                    'roles': ['galaxyTools','galaxyData']}
+                                    'roles': ['galaxyTools', 'galaxyData']}
                     scpd['filesystems'].append(data_fs_yaml)
                     log.info("Created a data volume '%s' of size %sGB from shared cluster's snapshot '%s'"
                              % (data_vol.id, data_vol.size, snap.id))
@@ -1438,7 +1518,7 @@ class ConsoleManager(BaseConsoleManager):
             # Including GALAXY_TOOLS role here breaks w/ new combined galaxyData/galaxyTools volume.  We should
             # probably change this to actually inspect and share base snapshots if applicable (like galaxyIndices) but
             # never volumes.
-            #if ServiceRole.GALAXY_TOOLS in roles or ServiceRole.GALAXY_INDICES in roles:
+            # if ServiceRole.GALAXY_TOOLS in roles or ServiceRole.GALAXY_INDICES in roles:
             if ServiceRole.GALAXY_INDICES in roles:
                 sfsl.append(fs)
         sud['filesystems'] = sfsl
@@ -1736,6 +1816,23 @@ class ConsoleManager(BaseConsoleManager):
         fs.add_volume(vol_id=vol_id, size=vol_size, from_snapshot_id=snap_id, dot=dot)
         self.add_master_service(fs)
         log.debug("Master done adding {0}-based FS {1}".format(fs_kind, fs_name))
+
+    @TestFlag(None)
+    def add_fs_gluster(self, gluster_server, fs_name,
+        fs_roles=[ServiceRole.GENERIC_FS], persistent=False):
+        """
+        Add a new file system service for a Gluster-based file system.
+        """
+        log.info("Adding a Gluster-based file system {0} from Gluster server {1}".format(fs_name, gluster_server))
+        fs = Filesystem(self.app, fs_name, persistent=persistent, svc_roles=fs_roles)
+        fs.add_glusterfs(gluster_server)
+        self.add_master_service(fs)
+        # Inform all workers to add the same FS (the file system will be the same
+        # and sharing it over NFS does not seems to work)
+        for w_inst in self.worker_instances:
+            # w_inst.send_add_nfs_fs(nfs_server, fs_name, fs_roles, username, pwd)
+            w_inst.send_mount_points()
+        log.debug("Master done adding FS from Gluster server {0}".format(gluster_server))
 
     @TestFlag(None)
     def add_fs_nfs(self, nfs_server, fs_name, username=None, pwd=None,
@@ -2190,7 +2287,11 @@ class ConsoleMonitor(object):
                             fs['ids'] = [
                                 v.from_snapshot_id for v in srvc.volumes]
                         elif srvc.kind == 'nfs':
-                            fs['nfs_server'] = srvc.nfs_fs.nfs_server
+                            fs['nfs_server'] = srvc.nfs_fs.device
+                        elif srvc.kind == 'gluster':
+                            fs['gluster_server'] = srvc.gluster_fs.device
+                        elif srvc.kind == 'transient':
+                            pass
                         else:
                             log.error("For filesystem {0}, unknown kind: {0}"
                                 .format(srvc.name, srvc.kind))
@@ -2201,7 +2302,11 @@ class ConsoleMonitor(object):
                     s['roles'] = ServiceRole.to_string_array(srvc.svc_roles)
                     if ServiceRole.GALAXY in srvc.svc_roles:
                         s['home'] = self.app.path_resolver.galaxy_home
-                    svcs.append(s)
+                    if ServiceRole.AUTOSCALE in srvc.svc_roles:
+                        # We do not persist Autoscale service
+                        pass
+                    else:
+                        svcs.append(s)
             cc['filesystems'] = fss
             cc['services'] = svcs
             cc['cluster_type'] = self.app.manager.initial_cluster_type
@@ -2724,6 +2829,9 @@ class Instance(object):
                 self.app.manager.worker_instances.remove(self)
                 log.info(
                     "Instance '%s' removed from the internal instance list." % self.id)
+                # If this was the last worker removed, add master back as execution host.
+                if len(self.app.manager.worker_instances) == 0 and not self.app.manager.master_exec_host:
+                    self.app.manager.toggle_master_as_exec_host()
         except ValueError, e:
             log.warning("Instance '%s' no longer in instance list, the global monitor probably "
                 "picked it up and deleted it already: %s" % (self.id, e))
@@ -2896,11 +3004,17 @@ class Instance(object):
         mount_points = []
         for fs in self.app.manager.get_services(svc_type=ServiceType.FILE_SYSTEM):
             if fs.nfs_fs:
-                nfs_server = fs.nfs_fs.nfs_server
+                fs_type = "nfs"
+                server = fs.nfs_fs.device
+            elif fs.gluster_fs:
+                fs_type = "glusterfs"
+                server = fs.gluster_fs.device
             else:
-                nfs_server = self.app.cloud_interface.get_private_ip()
+                fs_type = "nfs"
+                server = self.app.cloud_interface.get_private_ip()
             mount_points.append(
-                {'nfs_server': nfs_server,
+                {'fs_type': fs_type,
+                 'server': server,
                  'shared_mount_path': fs.get_details()['mount_point'],
                  'fs_name': fs.get_details()['name']})
         jmp = json.dumps({'mount_points': mount_points})
@@ -3037,7 +3151,13 @@ class Instance(object):
                         "Instance '%s' num CPUs is not int? '%s'" % (self.id, msplit[2]))
                 log.debug("Instance '%s' reported as having '%s' CPUs." %
                           (self.id, self.num_cpus))
-                ##<KWS>
+                # Make sure the instace is tagged (this is also necessary to do
+                # here for OpenStack because it does not allow tags to be added
+                # until an instance is 'running')
+                self.app.cloud_interface.add_tag(self.inst, 'clusterName', self.app.ud['cluster_name'])
+                self.app.cloud_interface.add_tag(self.inst, 'role', 'worker')
+                self.app.cloud_interface.add_tag(self.inst, 'Name', "Worker: {0}"
+                    .format(self.app.ud['cluster_name']))
 
                 log.debug("update condor host through master")
                 self.app.manager.update_condor_host(self.public_ip)

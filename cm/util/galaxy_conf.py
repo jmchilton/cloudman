@@ -78,7 +78,7 @@ def populate_process_options(option_manager):
     for Galaxy.
     """
     app = option_manager.app
-    web_thread_count = int(app.ud.get("web_thread_count", 1))
+    web_thread_count = int(app.ud.get("web_thread_count", 3))
     handler_thread_count = int(app.ud.get("handler_thread_count", 1))
     # Setup web threads
     [__add_server_process(option_manager, i, "web", 8080)
@@ -184,8 +184,10 @@ class FileGalaxyOptionManager(object):
         parser = SafeConfigParser()
         configfile = open(input_config_file_path, 'rt')
         parser.readfp(configfile)
+        if not parser.has_section(section):
+            parser.add_section(section)
         for key, value in properties.iteritems():
-            parser.set(section, key, value)
+            parser.set(section, key, str(value))
         configfile.close()
         new_config_file_path = join(galaxy_home, 'universe_wsgi.ini.new')
         with open(new_config_file_path, 'wt') as output_file:

@@ -702,6 +702,41 @@ def set_file_metadata(conn, bucket_name, remote_filename, metadata_key, metadata
     return False
 
 
+def get_file_from_public_bucket(ud, bucket_name, remote_filename, local_file):
+    """
+    A fallback method which does the equivalent of a wget from
+    the S3 REST API.
+    """
+    import urlparse
+    import requests
+
+    s3_host = ud.get('s3_host', 's3.amazonaws.com')
+    s3_port = ud.get('s3_port', 443)
+    s3_conn_path = ud.get('s3_conn_path', '/')
+
+    s3_base_url = 'https://' + s3_host + ':' + str(s3_port) + '/'
+    s3_base_url = urlparse.urljoin(s3_base_url, s3_conn_path)
+
+    # TODO: assume openstack public bucket with specific access rights. Fix later
+    if 'nectar' in ud.get('cloud_name', '').lower():
+        url = urlparse.urljoin(s3_base_url, '/V1/AUTH_377/')
+    else:
+        url = s3_base_url
+
+    url = urlparse.urljoin(url, bucket_name + "/")
+    url = urlparse.urljoin(url, remote_filename)
+
+    r = requests.get(url)
+    if r.status_code == requests.codes.ok:
+        f = open(local_file, 'w')
+        f.write(r.content)
+        f.close()
+        return True
+    else:
+        log.warn("Could not fetch file from s3 public url: %s" % url)
+        return False
+
+
 def run(cmd, err=None, ok=None, quiet=False, cwd=None):
     """
     Convenience method for executing a shell command ``cmd``. Returns
@@ -765,6 +800,22 @@ def replace_string(file_name, pattern, subst):
         shutil.move(abs_path, file_name)
     except Exception, e:
         log.error("Trouble replacing string in file {0}: {1}".format(file_name, e))
+
+
+def append_to_file(file_name, line):
+    """
+    Append ``line`` to ``file_name`` but only if not already present in the file.
+
+    :type file_name: str
+    :param file_name: Full path to the file where the line is to be appended
+
+    :type line: str
+    :param line: A line to be appended to the file
+    """
+    with open(file_name, 'a+') as f:
+        if not any(line.strip() == x.rstrip('\r\n') for x in f):
+            log.debug("Appending line '%s' to file %s" % (line, file_name))
+            f.write(line + '\n')
 
 
 def _if_not_installed(prog_name):
@@ -894,21 +945,22 @@ def size_to_bytes(size):
     except:
         pass
     # Otherwise it must have non-numeric characters
-    size_re = re.compile( '([\d\.]+)\s*([tgmk]b?|b|bytes?)$' )
-    size_match = re.match( size_re, size.lower() )
+    size_re = re.compile('([\d\.]+)\s*([tgmk]b?|b|bytes?)$')
+    size_match = re.match(size_re, size.lower())
     assert size_match is not None
-    size = float( size_match.group(1) )
+    size = float(size_match.group(1))
     multiple = size_match.group(2)
-    if multiple.startswith( 't' ):
-        return int( size * 1024**4 )
-    elif multiple.startswith( 'g' ):
-        return int( size * 1024**3 )
-    elif multiple.startswith( 'm' ):
-        return int( size * 1024**2 )
-    elif multiple.startswith( 'k' ):
-        return int( size * 1024 )
-    elif multiple.startswith( 'b' ):
-        return int( size )
+    if multiple.startswith('t'):
+        return int(size * 1024 ** 4)
+    elif multiple.startswith('g'):
+        return int(size * 1024 ** 3)
+    elif multiple.startswith('m'):
+        return int(size * 1024 ** 2)
+    elif multiple.startswith('k'):
+        return int(size * 1024)
+    elif multiple.startswith('b'):
+        return int(size)
+
 
 def detect_symlinks(dir_path, link_name=None, symlink_as_file=True):
     """
@@ -939,3 +991,15 @@ def detect_symlinks(dir_path, link_name=None, symlink_as_file=True):
                 continue
     return links
 
+
+def extract_archive_content_to_path(archive_url, path):
+    """
+    Extracts an archive from a given url to a specified path.
+    Currently supports only tar files
+    """
+    import requests
+    import tarfile
+    r = requests.get(archive_url, stream=True)
+    archive = tarfile.open(fileobj=r.raw, mode='r|*')
+    archive.extractall(path=path)
+    archive.close()

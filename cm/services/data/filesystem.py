@@ -16,7 +16,7 @@ from cm.util.misc import nice_size
 from cm.services import service_states
 from cm.services import ServiceRole
 from cm.services.data import DataService
-from cm.services.data.nfs import NfsFS
+from cm.services.data.mountablefs import MountableFS
 from cm.services.data.volume import Volume
 from cm.services.data.bucket import Bucket
 from cm.services.data.transient_storage import TransientStorage
@@ -40,6 +40,7 @@ class Filesystem(DataService):
         self.buckets = []  # A list of cm.services.data.bucket.Bucket objects
         self.transient_storage = []  # Instance's transient storage
         self.nfs_fs = None  # NFS file system object implementing this file system's device
+        self.gluster_fs = None  # GlusterFs based file system object implementing this file system's device
         self.name = name  # File system name
         self.persistent = persistent  # Whether it should be part of the cluster config
         self.size = None  # Total size of this file system
@@ -81,6 +82,8 @@ class Filesystem(DataService):
             details = ts._get_details(details)
         if self.kind == 'nfs':
             details = self.nfs_fs._get_details(details)
+        if self.kind == 'gluster':
+            details = self.gluster_fs._get_details(details)
         return details
 
     def _get_details(self, details):
@@ -124,18 +127,19 @@ class Filesystem(DataService):
                         b.bucket_name))
                 for ts in self.transient_storage:
                     self.kind = 'transient'
-                    self.persistent = False
                     ts.add()
                 if self.kind == 'nfs':
                     self.nfs_fs.start()
+                elif self.kind == 'gluster':
+                    self.gluster_fs.start()
             except Exception, e:
                 log.error("Error adding file system service {0}: {1}".format(
                     self.get_full_name(), e))
                 return False
             self.status()
-            log.debug("Done adding devices to {0} (devices: {1}, {2}, {3}, {4})"
+            log.debug("Done adding devices to {0} (devices: {1}, {2}, {3}, {4}, {5})"
                       .format(self.get_full_name(), self.volumes, self.buckets,
-                      self.transient_storage, self.nfs_fs.nfs_server if self.nfs_fs else '-'))
+                      self.transient_storage, self.nfs_fs.device if self.nfs_fs else '-', self.gluster_fs.device if self.gluster_fs else '-'))
             return True
         else:
             log.debug("Data service {0} in {2} state instead of {1} state; cannot add it"
@@ -156,8 +160,8 @@ class Filesystem(DataService):
 
         """
         log.info("Initiating removal of '{0}' data service with: volumes {1}, buckets {2}, "
-                 "transient storage {3}, and nfs server {4}".format(self.get_full_name(),
-                 self.volumes, self.buckets, self.transient_storage, self.nfs_fs))
+                 "transient storage {3}, nfs server {4} and gluster fs {5}".format(self.get_full_name(),
+                 self.volumes, self.buckets, self.transient_storage, self.nfs_fs, self.gluster_fs))
         self.state = service_states.SHUTTING_DOWN
         r_thread = threading.Thread(target=self.__remove, kwargs={'delete_devices':
             delete_devices})
@@ -193,6 +197,8 @@ class Filesystem(DataService):
             t.remove()
         if self.nfs_fs:
             self.nfs_fs.stop()
+        elif self.gluster_fs:
+            self.gluster_fs.stop()
         log.debug("Setting state of %s to '%s'" % (
             self.get_full_name(), service_states.SHUT_DOWN))
         self.state = service_states.SHUT_DOWN
@@ -397,7 +403,7 @@ class Filesystem(DataService):
                 for i, sp in enumerate(shared_paths):
                     if mount_point in sp:
                         in_ee = i
-                    if hadoo_mnt_point == sp:
+                    if hadoo_mnt_point in sp:
                         hadoop_set = True
 
                 # TODO:: change the follwoing line and make hadoop a file
@@ -579,7 +585,7 @@ class Filesystem(DataService):
             log.debug("Did not check status of filesystem '%s' with mount point '%s' in state '%s'"
                       % (self.name, self.mount_point, self.state))
 
-    def add_volume(self, vol_id=None, size=0, from_snapshot_id=None, dot=False):
+    def add_volume(self, vol_id=None, size=0, from_snapshot_id=None, dot=False, from_archive_url=None):
         """
         Add a volume device to this file system.
 
@@ -589,7 +595,7 @@ class Filesystem(DataService):
         log.debug("Adding Volume (id={id}, size={size}, snap={snap}) into Filesystem {fs}"
                   .format(id=vol_id, size=size, snap=from_snapshot_id, fs=self.get_full_name()))
         self.volumes.append(Volume(self, vol_id=vol_id, size=size,
-                            from_snapshot_id=from_snapshot_id, static=dot))
+                            from_snapshot_id=from_snapshot_id, static=dot, from_archive_url=from_archive_url))
 
     def add_bucket(self, bucket_name, bucket_a_key=None, bucket_s_key=None):
         """
@@ -603,7 +609,7 @@ class Filesystem(DataService):
         self.buckets.append(
             Bucket(self, bucket_name, bucket_a_key, bucket_s_key))
 
-    def add_transient_storage(self):
+    def add_transient_storage(self, from_archive_url=None, persistent=False):
         """
         Add instance's transient storage and make it available over NFS to the
         cluster. All this really does is makes a directory under ``/mnt`` and
@@ -611,7 +617,17 @@ class Filesystem(DataService):
         """
         log.debug("Configuring instance transient storage at {0} with NFS.".format(
             self.mount_point))
-        self.transient_storage.append(TransientStorage(self))
+        self.kind = 'transient'
+        self.persistent = True if from_archive_url else persistent
+        self.transient_storage.append(TransientStorage(self, from_archive_url=from_archive_url))
+
+    def add_glusterfs(self, gluster_server):
+        """
+        Add a Gluster server (e.g., ``172.22.169.17:/gluster_dir``) to mount the file system from
+        """
+        log.debug("Adding Gluster server {0} to file system {1}".format(gluster_server, self.name))
+        self.kind = 'gluster'
+        self.gluster_fs = MountableFS(self, 'glusterfs', gluster_server)
 
     def add_nfs(self, nfs_server, username=None, pwd=None):
         """
@@ -619,4 +635,4 @@ class Filesystem(DataService):
         """
         log.debug("Adding NFS server {0} to file system {1}".format(nfs_server, self.name))
         self.kind = 'nfs'
-        self.nfs_fs = NfsFS(self, nfs_server, username, pwd)
+        self.nfs_fs = MountableFS(self, 'nfs', nfs_server)

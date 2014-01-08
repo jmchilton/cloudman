@@ -67,7 +67,11 @@ class CM(BaseController):
             if startup_opt == "Galaxy" or startup_opt == "Data":
                 # Initialize form on the main UI contains two fields named ``pss``,
                 # which arrive as a list so pull out the actual storage size value
-                if galaxy_data_option == "custom-size":
+                if galaxy_data_option == "transient":
+                    storage_type = "transient"
+                    pss = 0
+                elif galaxy_data_option == "custom-size":
+                    storage_type = "volume"
                     if isinstance(pss, list):
                         ss = None
                         for x in pss:
@@ -75,10 +79,11 @@ class CM(BaseController):
                                 ss = x
                         pss = ss
                 else:
+                    storage_type = "volume"
                     pss = str(self.app.manager.get_default_data_size())
-                if pss and pss.isdigit():
+                if storage_type == "transient" or (pss and pss.isdigit()):
                     pss_int = int(pss)
-                    self.app.manager.init_cluster(startup_opt, pss_int)
+                    self.app.manager.init_cluster(startup_opt, pss_int, storage_type=storage_type)
                     return self.instance_state_json(trans)
                 else:
                     msg = "Wrong or no value provided for the persistent "\
@@ -105,7 +110,8 @@ class CM(BaseController):
         changesets = self.app.manager.check_for_new_version_of_CM()
         if 'default_CM_rev' in changesets and 'user_CM_rev' in changesets:
             try:
-                CM_url = trans.app.config.get("CM_url", "http://bitbucket.org/galaxy/cloudman/changesets/tip/")
+                CM_url = trans.app.config.get("CM_url",
+                    "https://bitbucket.org/galaxy/cloudman/commits/all?page=tip&search=")
                 # num_changes = int(changesets['default_CM_rev']) - int(changesets['user_CM_rev'])
                 CM_url += changesets['user_CM_rev'] + '::' + changesets['default_CM_rev']
                 return CM_url
@@ -390,6 +396,8 @@ class CM(BaseController):
             log_file = "paster.log"
         elif service_name == 'GalaxyReports':
             log_file = os.path.join(self.app.path_resolver.galaxy_home, 'reports_webapp.log')
+        elif service_name == 'LWR':
+            log_file = os.path.join(self.app.path_resolver.lwr_home, 'paster.log')
         # Set log length
         if num_lines:
             if show == 'more':

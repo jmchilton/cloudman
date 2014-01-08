@@ -6,8 +6,6 @@ import boto
 from boto.exception import BotoServerError
 from boto.exception import EC2ResponseError
 from boto.s3.connection import S3Connection
-from boto.s3.connection import OrdinaryCallingFormat
-from boto.s3.connection import SubdomainCallingFormat
 from boto.ec2.connection import EC2Connection
 
 
@@ -269,7 +267,7 @@ class EC2Interface(CloudInterface):
 
     def get_fqdn(self):
         log.debug("Retrieving FQDN")
-        if self.fqdn == None:
+        if not self.fqdn:
             try:
                 self.fqdn = socket.getfqdn()
             except IOError:
@@ -307,7 +305,7 @@ class EC2Interface(CloudInterface):
         return self.region
 
     def get_ec2_connection(self):
-        if self.ec2_conn == None:
+        if not self.ec2_conn:
             try:
                 if self.app.TESTFLAG is True:
                     log.debug("Attempted to establish EC2 connection, but TESTFLAG is set. "
@@ -334,7 +332,7 @@ class EC2Interface(CloudInterface):
 
     def get_s3_connection(self):
         # log.debug( 'Getting boto S3 connection' )
-        if self.s3_conn == None:
+        if not self.s3_conn:
             log.debug("No S3 Connection, creating a new one.")
             try:
                 self.s3_conn = S3Connection(
@@ -410,10 +408,11 @@ class EC2Interface(CloudInterface):
             ['%s: %s' % (key, value) for key, value in worker_ud.iteritems()])
         log.debug("Starting instance(s) with the following command : ec2_conn.run_instances( "
                   "image_id='{iid}', min_count='{min_num}', max_count='{num}', key_name='{key}', "
-                  "security_groups=['{sgs}'], user_data=[{ud}], instance_type='{type}', placement='{zone}')"
+                  "security_groups=['{sgs}'], user_data(with password/secret_key filtered out)=[{ud}], instance_type='{type}', placement='{zone}')"
                   .format(iid=self.get_ami(), min_num=min_num, num=num,
                     key=self.get_key_pair_name(), sgs=", ".join(self.get_security_groups()),
-                    ud=worker_ud_str, type=instance_type, zone=self.get_zone()))
+                    ud="\n".join(['%s: %s' % (key, value) for key, value in worker_ud.iteritems() if key not in['password', 'secret_key']]),
+                    type=instance_type, zone=self.get_zone()))
         try:
             # log.debug( "Would be starting worker instance(s)..." )
             reservation = None
@@ -431,10 +430,12 @@ class EC2Interface(CloudInterface):
                            # 'solution')
             if reservation:
                 for instance in reservation.instances:
-                    self.add_tag(instance, 'clusterName', self.app.ud['cluster_name'])
-                    self.add_tag(instance, 'role', worker_ud['role'])
-                    self.add_tag(instance, 'Name', "Worker: {0}"
-                        .format(self.app.ud['cluster_name']))
+                    # At this point in the launch, tag only amazon instances
+                    if 'amazon' in self.app.ud.get('cloud_name', 'amazon').lower():
+                        self.add_tag(instance, 'clusterName', self.app.ud['cluster_name'])
+                        self.add_tag(instance, 'role', worker_ud['role'])
+                        self.add_tag(instance, 'Name', "Worker: {0}"
+                            .format(self.app.ud['cluster_name']))
                     i = Instance(app=self.app, inst=instance, m_state=instance.state)
                     log.debug("Adding Instance %s" % instance)
                     self.app.manager.worker_instances.append(i)

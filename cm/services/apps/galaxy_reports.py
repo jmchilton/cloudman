@@ -1,7 +1,6 @@
 from datetime import datetime
 import os
 import subprocess
-import urllib2
 
 from cm.services.apps import ApplicationService
 
@@ -14,6 +13,7 @@ from cm.util.galaxy_conf import DirectoryGalaxyOptionManager
 
 import logging
 log = logging.getLogger('cloudman')
+DEFAULT_REPORTS_PORT = 9001
 
 
 class GalaxyReportsService(ApplicationService):
@@ -21,6 +21,7 @@ class GalaxyReportsService(ApplicationService):
     def __init__(self, app):
         super(GalaxyReportsService, self).__init__(app)
         self.galaxy_home = self.app.path_resolver.galaxy_home
+        self.reports_port = DEFAULT_REPORTS_PORT
         self.name = ServiceRole.to_string(ServiceRole.GALAXY_REPORTS)
         self.svc_roles = [ServiceRole.GALAXY_REPORTS]
         self.dependencies = [ServiceDependency(
@@ -29,15 +30,11 @@ class GalaxyReportsService(ApplicationService):
             self.app.path_resolver.galaxy_home, 'reports.conf.d')
 
     def _check_galaxy_reports_running(self):
-        dns = "http://127.0.0.1:9001"
-        try:
-            urllib2.urlopen(dns)
-            return True
-        except:
-            return False
+        return self._port_bound(self.reports_port)
 
     def start(self):
         self.state = service_states.STARTING
+        log.debug("Starting GalaxyReportsService")
         self.status()
         if not self.state == service_states.RUNNING:
             self._setup()
@@ -48,8 +45,9 @@ class GalaxyReportsService(ApplicationService):
                 self.start = service_states.ERROR
 
     def _setup(self):
-        reports_option_manager = \
-            DirectoryGalaxyOptionManager(self.app, conf_dir=self.conf_dir, conf_file_name='reports_wsgi.ini')
+        log.debug("Running GalaxyReportsService _setup")
+        reports_option_manager = DirectoryGalaxyOptionManager(self.app,
+            conf_dir=self.conf_dir, conf_file_name='reports_wsgi.ini')
         reports_option_manager.setup()
         main_props = {
             # Place dummy database_connection for run_reports.sh's --sync-config option to replace
@@ -60,8 +58,10 @@ class GalaxyReportsService(ApplicationService):
             'use': 'egg:PasteDeploy#prefix',
             'prefix': '/reports',
         }
-        reports_option_manager.set_properties(main_props, section='app:main', description='app_main_props')
-        reports_option_manager.set_properties(proxy_props, section='filter:proxy-prefix', description='proxy_prefix_props')
+        reports_option_manager.set_properties(main_props, section='app:main',
+            description='app_main_props')
+        reports_option_manager.set_properties(proxy_props, section='filter:proxy-prefix',
+            description='proxy_prefix_props')
 
     def remove(self, synchronous=False):
         log.info("Removing '%s' service" % self.name)
@@ -80,13 +80,14 @@ class GalaxyReportsService(ApplicationService):
     def _run(self, args):
         command = '%s - galaxy -c "export GALAXY_REPORTS_CONFIG_DIR=\'%s\'; sh $GALAXY_HOME/run_reports.sh %s"' % (
             paths.P_SU, self.conf_dir, args)
-        return misc.run(command, "Error invoking Galaxy Reports", "Successfully invoked Galaxy Reports.")
+        return misc.run(command, "Error invoking Galaxy Reports",
+            "Successfully invoked Galaxy Reports.")
 
     def status(self):
         if self.state == service_states.SHUTTING_DOWN or \
-            self.state == service_states.SHUT_DOWN or \
-            self.state == service_states.UNSTARTED or \
-                self.state == service_states.WAITING_FOR_USER_ACTION:
+           self.state == service_states.SHUT_DOWN or \
+           self.state == service_states.UNSTARTED or \
+           self.state == service_states.WAITING_FOR_USER_ACTION:
             pass
         elif self._check_daemon('galaxy_reports'):
             if self._check_galaxy_reports_running():
